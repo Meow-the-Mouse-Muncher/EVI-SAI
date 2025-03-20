@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from code.Networks.submodules import define_G,  ChannelAttentionv2, PatchEmbed, PatchUnEmbed, FusionSwinTransformerBlock
 from timm.models.layers import  trunc_normal_
 # cofiguration for convolutional layers
+##  改成snn了，没有被使用，哈哈
 cfg_cnn = [(30*2, 8, 1, 1, 3),
            (8+60, 16, 1, 2, 5),
            (16+60, 32, 1, 3, 7)]
@@ -15,10 +16,6 @@ cfg_cnn2 = [(30, 8, 1, 1, 3),
 cfg_cnn3 = [(30, 8, 1, 1, 3),
            (8+30, 16, 1, 2, 5),
            (16+30, 32, 1, 3, 7)]
-
-cfg_cnn4 = [(1, 8, 1, 1, 3),
-           (8+1, 16, 1, 2, 5),
-           (1+16, 32, 1, 3, 7)]
 
 # cofiguration for spiking layers
 cfg_snn =  [(2, 8, 1, 0, 1),
@@ -66,9 +63,8 @@ class EF_SAI_Net(nn.Module):
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn3[0]
         self.convfe1 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
                                 padding=padding)
-        in_planes, out_planes, stride, padding, kernel_size = cfg_cnn4[0]
-        self.convue1 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
-                                padding=padding)
+
+
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn[1]
         self.conve2=nn.Conv2d(in_channels=in_planes,out_channels=out_planes,kernel_size=kernel_size,stride=stride,padding=padding)
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn2[1]
@@ -77,9 +73,9 @@ class EF_SAI_Net(nn.Module):
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn3[1]
         self.convfe2 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
                                 padding=padding)
-        in_planes, out_planes, stride, padding, kernel_size = cfg_cnn4[1]
-        self.convue2 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
-                                padding=padding)
+  
+        
+
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn[2]
         self.conve3=nn.Conv2d(in_channels=in_planes,out_channels=out_planes,kernel_size=kernel_size,stride=stride,padding=padding)
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn2[2]
@@ -88,9 +84,8 @@ class EF_SAI_Net(nn.Module):
         in_planes, out_planes, stride, padding, kernel_size = cfg_cnn3[2]
         self.convfe3 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
                                 padding=padding)
-        in_planes, out_planes, stride, padding, kernel_size = cfg_cnn4[2]
-        self.convue3 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
-                                padding=padding)
+
+        
         ## Define SNN encoder
         in_planes, out_planes, stride, padding, kernel_size = cfg_snn[0]
         self.conv1 = nn.Conv2d(in_channels=in_planes, out_channels=out_planes, kernel_size=kernel_size, stride=stride,
@@ -166,6 +161,7 @@ class EF_SAI_Net(nn.Module):
         self.ca1 = ChannelAttentionv2(out_planes, 30)
 
         self.Gen = define_G(32 * 3, 1, 64, 'resnet_9blocks',norm='batch', use_dropout=False)  # dropout
+
     def check_image_size(self, x):
         _, _, h, w = x.size()
         mod_pad_h = (self.window_size - h % self.window_size) % self.window_size
@@ -175,10 +171,10 @@ class EF_SAI_Net(nn.Module):
     def forward(self, inpute, inputf, inputfe, time_window = 20):
         batch_size = inpute.shape[0]
         inpsize = inpute.shape[3]
-        inpe = inpute.to(device)
-        inpf = inputf.to(device)
-        inpfe = inputfe.to(device)
-
+        inpe = inpute.to(device)  # b 30 2 256 256
+        inpf = inputf.to(device)  # b 30 256 256
+        inpfe = inputfe.to(device)  # b 30 256 256
+        # --------------------------MF 编码模块------------------------#
         c1_mem = c1_spike = torch.zeros(batch_size, cfg_snn[0][1], inpsize, inpsize, device=device)
         c2_mem = c2_spike = torch.zeros(batch_size, cfg_snn[1][1], inpsize, inpsize, device=device)
         c3_mem = c3_spike = torch.zeros(batch_size, cfg_snn[2][1], inpsize, inpsize, device=device)
@@ -195,9 +191,11 @@ class EF_SAI_Net(nn.Module):
             c3_mem, c3_spike = mem_update(self.conv3, x, c3_mem, c3_spike)
             sumspike += c3_spike
             # normalize SNN output
-        x3 = sumspike / time_window
-        x3_shortcut = x3
-
+        x3 = sumspike / time_window # snn 输出 event 特征
+        x3_shortcut = x3  # b 32 h w
+        # self.conve1  0   event 的cnn 没有被使用哈哈
+        # self.convf1  1  framae
+        # self.convfe1  2  event frame
         # x event   y framae   z event frame
         y1 = self.convf1(inpf)
         y = torch.cat((y1, inpf), 1)
@@ -212,9 +210,14 @@ class EF_SAI_Net(nn.Module):
         z = torch.cat((z2, inpfe), 1)
         z3 = self.convfe3(z)
         z3_shortcut = z3
+        # 源特征 event frame  eframe
+        # e_orinal_features = x3
+        # f_orinal_features = y3
+        # ef_orinal_features = z3
+        #----------------------------------------------------------------------------------------#
+
+        #--------------------------------------CME 模块------------------------------------------#
         inp_size = x3.shape[-2:]
-
-
         for i in range(self.d):
             #### fusion #### 
             x3 = self.patch_embed(x3)
@@ -236,20 +239,38 @@ class EF_SAI_Net(nn.Module):
             z3 = self.patch_unembed(z3, inp_size)
         x3 = x3 + x3_shortcut
         y3 = y3 + y3_shortcut
-        z3 = z3 + z3_shortcut
+        z3 = z3 + z3_shortcut  # b 32 256 256
+        #这里的提取的增强特征要保证相互之间互信息最小
+        event_attention_features = x3
+        frame_attention_features = y3
+        event_frame_attention_features = z3
+        #----------------------------------------------------------------------------------------#
+
+        #--------------------------------------DAF 模块------------------------------------------#
+        # 为了输出一个权重
         inpe1 = inpe[:,:,0,:,:]
-        inpe2 = inpe[:,:,0,:,:]
+        # 我觉得这里写错了
+        # inpe2 = inpe[:,:,0,:,:]
+        inpe2 = inpe[:,:,1,:,:]
         inp = torch.cat((inpe1,inpe2),axis = 1)
-        ca = self.ca1(x3, inp, y3, inpf, z3, inpfe)
-        temp2 = torch.split(ca, 1, dim=1)
+        ca = self.ca1(x3, inp, y3, inpf, z3, inpfe)  # ChannelAttentionv2(32, 30)
+        weight_EF = torch.split(ca, 1, dim=1)
 
-        x3 = x3*temp2[0]
-        y3 = y3*temp2[1]
-        z3 = z3*temp2[2]    
-        inp_fetures = torch.cat((x3, y3, z3), dim=1)
-        outputs = self.Gen(inp_fetures)
+        x3 = x3*weight_EF[0] # b 32 256 256
+        y3 = y3*weight_EF[1]
+        z3 = z3*weight_EF[2]  
+        # x event   y framae   z event frame
+        inp_fetures = torch.cat((x3, y3, z3), dim=1) 
+        # now 权重选择完毕，得到了 xyz 三个特征 b 96 256 256
+        #----------------------------------------------------------------------------------------#
 
-        return outputs
+        #--------------------------------------MF解码模块------------------------------------------#
+        outputs = self.Gen(inp_fetures) # b 1 256 256
+        # 将特征打包输出
+        # loss_Parameter = [e_orinal_features, f_orinal_features, ef_orinal_features, 
+        #                   event_attention_features, frame_attention_features, event_frame_attention_features]
+        loss_Parameter = [event_attention_features, frame_attention_features, event_frame_attention_features]
+        return outputs, loss_Parameter
 
 
 if __name__ == '__main__':

@@ -17,6 +17,8 @@ from code.Networks.EF_SAI_Net import EF_SAI_Net
 from UnsupervisedLoss import TotalLoss
 import utils
 from pytorch_msssim import SSIM
+import torch.nn as nn
+from torch.distributions import kl, Normal, Independent
 # os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"  # choose GPU
 def eval_bn(m):
     if type(m) == torch.nn.BatchNorm2d:
@@ -31,6 +33,7 @@ def psnr(img1:Tensor,img2:Tensor):
     mse = torch.sum((img1-img2)**2)/img1.numel()
     psnr = 10*log10(1/mse)
     return psnr
+
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
@@ -104,18 +107,25 @@ if __name__ == '__main__':
                 net.zero_grad()
                 optimizer.zero_grad()
                 ## 数据集提前归一化好了
-                pred = net(event, frame, eframe, time_step)
+                pred,features = net(event, frame, eframe, time_step)
+
                 frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                 eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
                 # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
                 event_refocus = torch.sum(torch.abs(event),dim=2,keepdim=False) 
                 event_refocus = (event_refocus - event_refocus.min())/(event_refocus.max()-event_refocus.min())
                 event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
-                loss = criterion(frame_refocus,event_refocus,eframe_refocus,pred)
+
+                # event_attention_features, frame_attention_features, event_frame_attention_features
+                refocus_data = [event_refocus,frame_refocus,eframe_refocus]
+                loss = criterion(refocus_data,features,pred)
                 loss_record['train'] += loss.item()
                 loss.backward()
-                # #  梯度裁剪防止爆炸
                 optimizer.step()
+                
+                # 清理缓存
+                torch.cuda.empty_cache()
+                    
                 psnr_record['train'] += psnr(pred,gt)
                 ssim_record['train'] += ssim_module(pred,gt)
                 fsai_psnr+=psnr(frame_refocus,gt)
@@ -140,7 +150,7 @@ if __name__ == '__main__':
                         gt = gt.to(device)
                         frame = frame.to(device)
                         eframe = eframe.to(device)
-                        pred = net(event, frame, eframe, time_step)
+                        pred,_ = net(event, frame, eframe, time_step)
                         frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                         eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
                         # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化

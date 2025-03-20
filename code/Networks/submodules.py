@@ -18,9 +18,6 @@ class ChannelAttentionv2(nn.Module):
         self.conv1 = nn.Sequential(nn.Conv2d(in_planes2*2, 1, kernel_size, padding=kernel_size//2, bias=False), nn.ReLU())
         self.conv2 = nn.Sequential(nn.Conv2d(in_planes2, 1, kernel_size, padding=kernel_size//2, bias=False), nn.ReLU())
         self.conv3 = nn.Sequential(nn.Conv2d(in_planes2, 1, kernel_size, padding=kernel_size//2, bias=False), nn.ReLU())
-        #self.conv4 = nn.Sequential(nn.Conv2d(in_planes+1, 1, kernel_size, padding=kernel_size//2, bias=False), nn.ReLU())
-        #self.conv5 = nn.Sequential(nn.Conv2d(in_planes+1, 1, kernel_size, padding=kernel_size // 2, bias=False),nn.ReLU())
-        #self.conv6 = nn.Sequential(nn.Conv2d(in_planes+1, 1, kernel_size, padding=kernel_size // 2, bias=False),nn.ReLU())
         in_planes3 = in_planes*3+3
         self.fc = nn.Sequential(nn.Conv2d(in_planes3, in_planes3 // ratio, 1, bias=False),
                                 nn.ReLU(),
@@ -28,6 +25,8 @@ class ChannelAttentionv2(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x1, x2, y1, y2, z1, z2):
+        #(x3, inp, y3, inpf, z3, inpfe)
+        #x event   y framae   z eframe
         x = self.conv1(x2)
         x = torch.cat([x1, x], dim=1)
         # x = self.conv4(x)

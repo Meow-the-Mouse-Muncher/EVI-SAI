@@ -14,9 +14,9 @@ from math import log10
 import sys
 from code.EF_Dataset import Dataset_EFNet
 from code.Networks.EF_SAI_Net import EF_SAI_Net
-from loss import TotalLoss
+from UnsupervisedLoss import TotalLoss
 import utils
-# os.environ['CUDA_VISIBLE_DEVICES'] = "1"  # choose GPU
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"  # choose GPU
 
 def eval_bn(m):
     if type(m) == torch.nn.BatchNorm2d:
@@ -34,7 +34,7 @@ def psnr(img1:Tensor,img2:Tensor):
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument("--base_path", type=str, default="/home_ssd/sjy/EF-SAI/EF_Dataset", help="validation aps path")
+    parser.add_argument("--base_path", type=str, default="/mnt/home_ssd/sjy/EF-SAI/EF_Dataset", help="validation aps path")
     opts=parser.parse_args()
 
     with open(os.path.abspath('./config.yaml'),'r') as f:
@@ -57,6 +57,8 @@ if __name__ == '__main__':
     tb = SummaryWriter(log_dir=f"{results_dir}/{exp_name}",flush_secs=10)
     # net
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"CUDA是否可用: {torch.cuda.is_available()}")
+    print(f"CUDA设备数量: {torch.cuda.device_count()}")
     net = EF_SAI_Net()
     net = torch.nn.DataParallel(net)
     if os.path.exists(f"{results_dir}/{exp_name}/model/checkpoint.pth"):
@@ -65,7 +67,8 @@ if __name__ == '__main__':
     net = net.train()
     optimizer = torch.optim.Adam(net.parameters(),lr=opt.lr) # default: 5e-4
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,64)
-    criterion = TotalLoss(weights=[1e0,8,2e-4],percepWei=[1e-1,1/21,10/21,10/21])
+    # criterion = TotalLoss(weights=[1e0,8,2e-4],percepWei=[1e-1,1/21,10/21,10/21])
+    criterion = TotalLoss()
     # criterion = TotalLoss(weights=[1e0,32,2e-4],percepWei=[1e-1,1/21,10/21,10/21])
     # train
     max_epochs = opt.max_epoch
@@ -96,8 +99,20 @@ if __name__ == '__main__':
                 net.zero_grad()
                 optimizer.zero_grad()
                 ## 数据集提前归一化好了
-                pred = net(event, frame, eframe, time_step)
-                loss = criterion(pred,gt)
+                pred,features = net(event, frame, eframe, time_step)
+
+                frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
+                eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
+                # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
+                event_refocus = torch.sum(torch.abs(event),dim=2,keepdim=False) 
+                event_refocus = (event_refocus - event_refocus.min())/(event_refocus.max()-event_refocus.min())
+                event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
+
+                # event_attention_features, frame_attention_features, event_frame_attention_features
+                refocus_data = [event_refocus,frame_refocus,eframe_refocus]
+                loss = criterion(refocus_data,features,pred)
+
+                # loss = criterion(pred,gt)
                 loss_record['train'] += loss.item()
                 loss.backward()
                 # #  梯度裁剪防止爆炸
@@ -121,7 +136,7 @@ if __name__ == '__main__':
                         gt = gt.to(device)
                         frame = frame.to(device)
                         eframe = eframe.to(device)
-                        pred = net(event, frame, eframe, time_step)
+                        pred,_ = net(event, frame, eframe, time_step)
                         utils.tb_image(opt,tb,epoch,'train',f"pred_{i:04d}",pred[0:1,...])
                         utils.tb_image(opt,tb,epoch,'train',f"gt_{i:04d}",(gt[0:1,...]))
             scheduler.step()
