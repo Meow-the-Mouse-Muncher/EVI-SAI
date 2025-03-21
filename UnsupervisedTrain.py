@@ -24,6 +24,7 @@ import utils
 from pytorch_msssim import SSIM
 import torch.nn as nn
 from torch.distributions import kl, Normal, Independent
+os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 # os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3"  # choose GPU
 def eval_bn(m):
     if type(m) == torch.nn.BatchNorm2d:
@@ -39,6 +40,10 @@ def psnr(img1:Tensor,img2:Tensor):
     psnr = 10*log10(1/mse)
     return psnr
 
+def check_unused_parameters(model):
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            print(f"Parameter {name} has no gradient")
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
@@ -88,14 +93,14 @@ if __name__ == '__main__':
     # net = torch.nn.DataParallel(net)
     net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
     net = net.cuda(local_rank)
-    net = DistributedDataParallel(net, device_ids=[local_rank])
+    net = DistributedDataParallel(net, device_ids=[local_rank], find_unused_parameters=False)
 
 
     # sam_model = SimSiam(models.__dict__['resnet50'],dim=2048,pred_dim=512 )
 
-    sam_model = SimSiamLight(dim=512, pred_dim=128)
-    sam_model = sam_model.cuda(local_rank)
-    sam_model = DistributedDataParallel(sam_model, device_ids=[local_rank])
+    # sam_model = SimSiamLight(dim=512, pred_dim=128)
+    # sam_model = sam_model.cuda(local_rank)
+    # sam_model = DistributedDataParallel(sam_model, device_ids=[local_rank], find_unused_parameters=False)
 
 
     if local_rank == 0:  # 只在主进程记录日志
@@ -117,6 +122,7 @@ if __name__ == '__main__':
     save_skip = opt.save_skip
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=(5.e-5/5.e-4)**(1/max_epochs))
     ssim_module = SSIM(data_range=1.0, channel=1) 
+    torch.autograd.set_detect_anomaly(True)  # 开启异常检测
     for epoch in range(max_epochs):
         train_sampler.set_epoch(epoch)  # 添加这行确保每个epoch数据分布不同
         # BN eval 在xx次数后冻结bn的参数
@@ -147,6 +153,7 @@ if __name__ == '__main__':
                 optimizer.zero_grad()
                 ## 数据集提前归一化好了
                 pred,features = net(event, frame, eframe, time_step)
+                check_unused_parameters(net.module)
 
                 frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                 eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
@@ -156,31 +163,27 @@ if __name__ == '__main__':
                 event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
 
-                # 计算 SimSiam 损失
-                cos_sim = nn.CosineSimilarity(dim=1).cuda(local_rank)
-                simsiam_losses = []
+                # # 计算 SimSiam 损失
+                # cos_sim = nn.CosineSimilarity(dim=1).cuda(local_rank)
                 
-                # 计算各对图像之间的 SimSiam 损失
-                p1, p2, z1, z2 = sam_model(x1=pred, x2=event_refocus)
-                simsiam_loss_ep = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
-                simsiam_losses.append(simsiam_loss_ep)
+                # # 计算各对图像之间的 SimSiam 损失
+                # p1_ep, p2_ep, z1_ep, z2_ep = sam_model(x1=pred.clone(), x2=event_refocus.clone())
+                # simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
 
-                # 2. frame_refocus 和 pred 之间的损失
-                p1, p2, z1, z2 = sam_model(x1=pred, x2=frame_refocus)
-                simsiam_loss_fp = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
-                simsiam_losses.append(simsiam_loss_fp)
+                # # 2. frame_refocus 和 pred 之间的损失
+                # p1_fp, p2_fp, z1_fp, z2_fp = sam_model(x1=pred.clone(), x2=frame_refocus.clone())
+                # simsiam_loss_fp = -(cos_sim(p1_fp, z2_fp.detach()).mean() + cos_sim(p2_fp, z1_fp.detach()).mean()) * 0.5
 
-                # 3. eframe_refocus 和 pred 之间的损失
-                p1, p2, z1, z2 = sam_model(x1=pred, x2=eframe_refocus)
-                simsiam_loss_efp = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
-                simsiam_losses.append(simsiam_loss_efp)
+                # # 3. eframe_refocus 和 pred 之间的损失
+                # p1_efp, p2_efp, z1_efp, z2_efp = sam_model(x1=pred.clone(), x2=eframe_refocus.clone())
+                # simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
 
-                # 合并所有 SimSiam 损失
-                simsiam_loss_total = simsiam_loss_ep *1e-1 + simsiam_loss_fp * 1e1 + simsiam_loss_efp * 1e-3
+                # # 合并所有 SimSiam 损失
+                # simsiam_loss_total = simsiam_loss_ep *1e-1 + simsiam_loss_fp * 1e1 + simsiam_loss_efp * 1e-3
 
                 content_loss = criterion(refocus_data,features,pred)
-                loss = content_loss +  1e-1 * simsiam_loss_total
-                # loss = content_loss
+                # loss = content_loss +  1e-1 * simsiam_loss_total
+                loss = content_loss
                 loss_record['train'] += loss.item()
                 loss.backward()
                 optimizer.step()

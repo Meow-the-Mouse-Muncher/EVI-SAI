@@ -833,7 +833,7 @@ class SimSiamLight(nn.Module):
         self.predictor = nn.Sequential(
             nn.Linear(dim, pred_dim, bias=False),
             nn.BatchNorm1d(pred_dim),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Linear(pred_dim, dim)
         )
     

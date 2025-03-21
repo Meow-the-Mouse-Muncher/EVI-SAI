@@ -42,17 +42,17 @@ def frame_refocus(frame, threshold=1e-6, norm_type='minmax', use_mask=False):
     """
     if not frame.is_floating_point():
         frame = frame.float()
-    
+    frame_copy = frame.clone()
     # 根据use_mask参数决定是否使用mask
     if use_mask:
-        mask = frame.abs().gt(threshold)
-        summed = torch.sum(frame.masked_fill(~mask, 0), dim=1, keepdim=True)
+        mask = frame_copy.abs().gt(threshold)
+        summed = torch.sum(frame_copy.masked_fill(~mask, 0), dim=1, keepdim=True)
         valid_channels = torch.sum(mask, dim=1, keepdim=True).clamp_(min=threshold)
         normalized = summed.div(valid_channels)
         normalized.mul_(valid_channels.gt(threshold))
     else:
         # 直接在通道维度上求和
-        normalized = torch.sum(frame, dim=1, keepdim=True)
+        normalized = torch.sum(frame_copy, dim=1, keepdim=True)
     
     # 使用tensor操作进行归一化
     if norm_type == 'minmax':
@@ -91,6 +91,6 @@ def frame_refocus(frame, threshold=1e-6, norm_type='minmax', use_mask=False):
             if std > threshold:
                 normalized.sub_(mean).div_(std)
     
-    return normalized.clamp_(0, 1)
+    return torch.clamp(normalized, 0, 1)
 
 
