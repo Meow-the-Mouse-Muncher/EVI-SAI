@@ -101,8 +101,8 @@ class Mutual_info_reg(nn.Module):
         depth_feat = self.adaptive_pool(depth_feat)
         
         # 展平为32*32
-        rgb_feat = rgb_feat.view(-1, self.channel * 1 * 32 * 32)
-        depth_feat = depth_feat.view(-1, self.channel * 1 * 32 * 32)
+        rgb_feat = rgb_feat.reshape(-1, self.channel * 1 * 32 * 32)
+        depth_feat = depth_feat.reshape(-1, self.channel * 1 * 32 * 32)
         
         #  全连接层降维预测方差和均值
         mu_rgb = self.fc1_rgb3(rgb_feat)

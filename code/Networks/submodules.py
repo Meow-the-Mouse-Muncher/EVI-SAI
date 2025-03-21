@@ -806,16 +806,16 @@ class LightEncoder(nn.Module):
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 32, 3, 2, 1),    # 原尺寸/2
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(32, 64, 3, 2, 1),            # 原尺寸/4 
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(64, 128, 3, 2, 1),           # 原尺寸/8
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.Conv2d(128, 256, 3, 2, 1),          # 原尺寸/16
             nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=False),
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Linear(256, dim)

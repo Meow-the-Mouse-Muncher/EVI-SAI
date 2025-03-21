@@ -180,6 +180,7 @@ if __name__ == '__main__':
 
                 content_loss = criterion(refocus_data,features,pred)
                 loss = content_loss +  1e-1 * simsiam_loss_total
+                # loss = content_loss
                 loss_record['train'] += loss.item()
                 loss.backward()
                 optimizer.step()
