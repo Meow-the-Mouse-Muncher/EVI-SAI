@@ -18,7 +18,7 @@ import sys
 from code.EF_Dataset import Dataset_EFNet
 from code.Networks.EF_SAI_Net import EF_SAI_Net
 from UnsupervisedLoss import TotalLoss
-from code.Networks.submodules import SimSiam
+from code.Networks.submodules import SimSiam,SimSiamLight
 import torchvision.models as models
 import utils
 from pytorch_msssim import SSIM
@@ -89,14 +89,18 @@ if __name__ == '__main__':
     net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
     net = net.cuda(local_rank)
     net = DistributedDataParallel(net, device_ids=[local_rank])
-    sam_model = SimSiam(models.__dict__['resnet50'],dim=2048,pred_dim=512 )
+
+
+    # sam_model = SimSiam(models.__dict__['resnet50'],dim=2048,pred_dim=512 )
+
+    sam_model = SimSiamLight(dim=512, pred_dim=128)
     sam_model = sam_model.cuda(local_rank)
     sam_model = DistributedDataParallel(sam_model, device_ids=[local_rank])
-    #  固定特征维度为2048 固定预测头隐层维度为512
+
+
     if local_rank == 0:  # 只在主进程记录日志
         tb = SummaryWriter(log_dir=f"{results_dir}/{exp_name}", flush_secs=10)  
         
-         
     if os.path.exists(f"{results_dir}/{exp_name}/model/checkpoint.pth"):
         # 加载到正确设备并处理DDP模型
         checkpoint = torch.load(f"{results_dir}/{exp_name}/model/checkpoint.pth", 
@@ -129,6 +133,7 @@ if __name__ == '__main__':
         ssim_record = dict()
         ssim_record['train'],ssim_record['val'] = 0,0
         # train
+        accumulation_steps = 4  # 每4步更新一次参数
         with tqdm(total=len(train_dataloader)) as pbar:
             pbar.set_description_str(f'[epoch {epoch}|Train]')
             net = net.train()
@@ -149,33 +154,24 @@ if __name__ == '__main__':
                 event_refocus = torch.sum(torch.abs(event),dim=2,keepdim=False) 
                 event_refocus = (event_refocus - event_refocus.min())/(event_refocus.max()-event_refocus.min())
                 event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
-                # event_attention_features, frame_attention_features, event_frame_attention_features
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
-
-                #
-                # 将单通道图像扩展为3通道以适应 ResNet
-                event_refocus_3c = event_refocus.repeat(1, 3, 1, 1) if event_refocus.shape[1] == 1 else event_refocus
-                frame_refocus_3c = frame_refocus.repeat(1, 3, 1, 1) if frame_refocus.shape[1] == 1 else frame_refocus
-                eframe_refocus_3c = eframe_refocus.repeat(1, 3, 1, 1) if eframe_refocus.shape[1] == 1 else eframe_refocus
-                pred_3c = pred.repeat(1, 3, 1, 1) if pred.shape[1] == 1 else pred
-
 
                 # 计算 SimSiam 损失
                 cos_sim = nn.CosineSimilarity(dim=1).cuda(local_rank)
                 simsiam_losses = []
                 
                 # 计算各对图像之间的 SimSiam 损失
-                p1, p2, z1, z2 = sam_model(x1=pred_3c, x2=event_refocus_3c)
+                p1, p2, z1, z2 = sam_model(x1=pred, x2=event_refocus)
                 simsiam_loss_ep = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
                 simsiam_losses.append(simsiam_loss_ep)
 
                 # 2. frame_refocus 和 pred 之间的损失
-                p1, p2, z1, z2 = sam_model(x1=pred_3c, x2=frame_refocus_3c)
+                p1, p2, z1, z2 = sam_model(x1=pred, x2=frame_refocus)
                 simsiam_loss_fp = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
                 simsiam_losses.append(simsiam_loss_fp)
 
                 # 3. eframe_refocus 和 pred 之间的损失
-                p1, p2, z1, z2 = sam_model(x1=pred_3c, x2=eframe_refocus_3c)
+                p1, p2, z1, z2 = sam_model(x1=pred, x2=eframe_refocus)
                 simsiam_loss_efp = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
                 simsiam_losses.append(simsiam_loss_efp)
 

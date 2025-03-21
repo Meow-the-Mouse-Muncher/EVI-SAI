@@ -799,6 +799,56 @@ class FusionSwinTransformerBlock(nn.Module):
 
 
 
+## 轻量级siam
+class LightEncoder(nn.Module):
+    def __init__(self, in_channels=1, dim=512):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 32, 3, 2, 1),    # 原尺寸/2
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, 3, 2, 1),            # 原尺寸/4 
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, 3, 2, 1),           # 原尺寸/8
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 256, 3, 2, 1),          # 原尺寸/16
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(256, dim)
+        )
+        
+    def forward(self, x):
+        return self.encoder(x)
+        
+class SimSiamLight(nn.Module):
+    def __init__(self, dim=512, pred_dim=128):
+        super().__init__()
+        self.encoder = LightEncoder(in_channels=1, dim=dim)
+        
+        # 预测器
+        self.predictor = nn.Sequential(
+            nn.Linear(dim, pred_dim, bias=False),
+            nn.BatchNorm1d(pred_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(pred_dim, dim)
+        )
+    
+    def forward(self, x1, x2):
+        # 获取特征
+        z1 = self.encoder(x1)
+        z2 = self.encoder(x2)
+        
+        # 预测
+        p1 = self.predictor(z1)
+        p2 = self.predictor(z2)
+        
+        return p1, p2, z1.detach(), z2.detach()
+    
+
 # Copyright (c) Facebook, Inc. and its affiliates.
 # All rights reserved.
 
