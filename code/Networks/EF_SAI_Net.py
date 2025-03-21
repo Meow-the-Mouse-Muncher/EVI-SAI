@@ -104,7 +104,7 @@ class EF_SAI_Net(nn.Module):
         ##################################################################
         window_size = 8
         self.window_size = window_size
-        self.d = 2
+        self.d = 6
         mlp_ratio = 2.
         qkv_bias = True
         qk_scale = None

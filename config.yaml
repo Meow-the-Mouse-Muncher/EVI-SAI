@@ -1,6 +1,6 @@
 seed: 42
 lr: 5.e-3
-bs: 2 # batch size
+bs: 4 # batch size
 exp_name: exp_EF # experiment name
 max_epoch: 450
 fix_bn_epoch: 300 # if current epoch > fix_bn_epoch, turn BN to eval mode
