@@ -65,13 +65,17 @@ class Mutual_info_reg(nn.Module):
         # 继续缩小尺寸
         self.layer3 = nn.Conv2d(channels, channels, kernel_size=4, stride=2, padding=1)
         self.layer4 = nn.Conv2d(channels, channels, kernel_size=4, stride=2, padding=1)
+        
+        # 添加自适应池化层确保输出尺寸为32x32
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((32, 32))
 
         self.channel = channels
 
-        self.fc1_rgb3 = nn.Linear(channels * 1 * 64 * 64, latent_size)
-        self.fc2_rgb3 = nn.Linear(channels * 1 * 64 * 64, latent_size)
-        self.fc1_depth3 = nn.Linear(channels * 1 * 64 * 64, latent_size)
-        self.fc2_depth3 = nn.Linear(channels * 1 * 64 * 64, latent_size)
+        # 修改全连接层的输入维度为32*32
+        self.fc1_rgb3 = nn.Linear(channels * 1 * 32 * 32, latent_size)
+        self.fc2_rgb3 = nn.Linear(channels * 1 * 32 * 32, latent_size)
+        self.fc1_depth3 = nn.Linear(channels * 1 * 32 * 32, latent_size)
+        self.fc2_depth3 = nn.Linear(channels * 1 * 32 * 32, latent_size)
 
         self.leakyrelu = nn.LeakyReLU()
         self.tanh = torch.nn.Tanh()
@@ -90,27 +94,34 @@ class Mutual_info_reg(nn.Module):
 
     def forward(self, rgb_feat, depth_feat):
         rgb_feat = self.layer3(self.leakyrelu(self.layer1(rgb_feat)))
-        depth_feat = self.layer4(self.leakyrelu(self.layer2(depth_feat))) # N 8 64 64
-        # 展平
-        rgb_feat = rgb_feat.view(-1, self.channel * 1 * 64 * 64)
-        depth_feat = depth_feat.view(-1, self.channel * 1 * 64 * 64)
-        #  全连接层 降维 预测方差和均值  n x channels * 1 * 64 * 64 -> n x 4
+        depth_feat = self.layer4(self.leakyrelu(self.layer2(depth_feat)))
+        
+        # 使用自适应池化确保特征图尺寸为32x32
+        rgb_feat = self.adaptive_pool(rgb_feat)
+        depth_feat = self.adaptive_pool(depth_feat)
+        
+        # 展平为32*32
+        rgb_feat = rgb_feat.view(-1, self.channel * 1 * 32 * 32)
+        depth_feat = depth_feat.view(-1, self.channel * 1 * 32 * 32)
+        
+        #  全连接层降维预测方差和均值
         mu_rgb = self.fc1_rgb3(rgb_feat)
         logvar_rgb = self.fc2_rgb3(rgb_feat)
         mu_depth = self.fc1_depth3(depth_feat)
         logvar_depth = self.fc2_depth3(depth_feat)
-        # tanh激活
+        
+        # tanh激活函数
         mu_depth = self.tanh(mu_depth)
         mu_rgb = self.tanh(mu_rgb)
         logvar_depth = self.tanh(logvar_depth)
         logvar_rgb = self.tanh(logvar_rgb)
-        # 重参数化采样 得到一个新的z
+        
         z_rgb = self.reparametrize(mu_rgb, logvar_rgb)
         z_depth = self.reparametrize(mu_depth, logvar_depth)
-        # 创建正态分布  得到z的正态分布
+        
         dist_rgb = Independent(Normal(loc=mu_rgb, scale=torch.exp(logvar_rgb)), 1)
         dist_depth = Independent(Normal(loc=mu_depth, scale=torch.exp(logvar_depth)), 1)
-        # 计算双向KL散度
+        
         bi_di_kld = torch.mean(self.kl_divergence(dist_rgb, dist_depth)) + torch.mean(
             self.kl_divergence(dist_depth, dist_rgb))
         z_rgb_norm = torch.sigmoid(z_rgb)
@@ -118,9 +129,7 @@ class Mutual_info_reg(nn.Module):
         ce_rgb_depth = CE(z_rgb_norm,z_depth_norm.detach())
         ce_depth_rgb = CE(z_depth_norm, z_rgb_norm.detach())
         latent_loss = ce_rgb_depth+ce_depth_rgb-bi_di_kld
-        # 这里计算的公式应该是： H(x,y)是交叉熵！
-        # MI = H(x,y)+H(y,x)-KL(x||y)-KL(y||x) - H(X;Y) <= H(x,y)+H(y,x)-KL(x||y)-KL(y||x)
-
+        
         return latent_loss
 
 
