@@ -7,9 +7,9 @@ from torchmetrics.image import VisualInformationFidelity
 import torch.nn.functional as F
 from pytorch_metric_learning import losses
 from pytorch_metric_learning.utils import logging_presets
+
 import os
 # os.environ['CUDA_VISIBLE_DEVICES']="1" # choose GPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Vgg16(nn.Module):
     def __init__(self):
@@ -82,8 +82,10 @@ class Mutual_info_reg(nn.Module):
 
     def reparametrize(self, mu, logvar): #VAE 
         std = logvar.mul(0.5).exp_()
-        eps = torch.cuda.FloatTensor(std.size()).normal_()
-        eps = Variable(eps)
+        # eps = torch.cuda.FloatTensor(std.size()).normal_()
+        # eps = Variable(eps)
+        # 使用与输入相同的设备生成噪声
+        eps = torch.randn_like(std)
         return eps.mul(std).add_(mu)
 
     def forward(self, rgb_feat, depth_feat):
@@ -141,9 +143,6 @@ class MutualInformationLoss(nn.Module):
         # 返回总的互信息损失
         return mi_fe + 0.1*mi_ff + 0.1*mi_ef
 
-# class InfoNCELoss(nn.Module):
-
-
     
 class SpatialFrequencyLoss(nn.Module):
     def __init__(self):
@@ -187,6 +186,8 @@ class TotalLoss:
         self.SSIM =SSIM(data_range=1.0, channel=1) 
         self.SF = SpatialFrequencyLoss() 
         self.VIF = VisualInformationFidelity()
+        self.mi_loss = MutualInformationLoss(32,8)
+        self.mi_initialized = False  # 跟踪是否已移动到设备
         ## distrubute weights
         self.contentW = weights[0]
         self.pixelW = weights[1]
@@ -194,22 +195,26 @@ class TotalLoss:
         # self.mi_weight = 1e-3  # 互信息损失权重
 
     def __call__(self, data_refocus,features,pred): #
+        current_device = features[0].device
+        event_features = features[0] # b 32 256 256
+        frame_features = features[1] # b 32 256 256
+        eframe_features = features[2] # b 32 256 256
+
+        event = data_refocus[0].to(current_device)  # B 1 256 256
+        frame = data_refocus[1].to(current_device)
+        eframe = data_refocus[2].to(current_device)
+
         
-        event_features = features[0].to(device) # b 32 256 256
-        frame_features = features[1].to(device) # b 32 256 256
-        eframe_features = features[2].to(device) # b 32 256 256
-
-        event = data_refocus[0].to(device) # B 1 256 256
-        frame = data_refocus[1].to(device) # B 1 256 256
-        eframe = data_refocus[2].to(device) # B 1 256 256
+        # 第一次调用时将互信息损失移到正确设备
+        if not self.mi_initialized:
+            self.mi_loss = self.mi_loss.to(current_device)
+            self.mi_initialized = True
 
 
 
+        pred = pred.to(current_device) # B 1 256 256
 
-        pred = pred.to(device) # B 1 256 256
-
-        b, c, h, w = event_features.shape
-        self.mi_loss = MutualInformationLoss(c,8).to(device)
+        
         # ## gray to 3-dim image to fit vgg16
         # frame = frame.repeat(1, 3, 1, 1) if frame.shape[1] == 1 else frame
         # event = event.repeat(1, 3, 1, 1) if event.shape[1] == 1 else event

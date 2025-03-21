@@ -11,10 +11,15 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from torch import Tensor
 from math import log10
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
 import sys
 from code.EF_Dataset import Dataset_EFNet
 from code.Networks.EF_SAI_Net import EF_SAI_Net
 from UnsupervisedLoss import TotalLoss
+from code.Networks.submodules import SimSiam
+import torchvision.models as models
 import utils
 from pytorch_msssim import SSIM
 import torch.nn as nn
@@ -38,7 +43,10 @@ def psnr(img1:Tensor,img2:Tensor):
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
     parser.add_argument("--base_path", type=str, default="/mnt/home_ssd/sjy/EF-SAI/EF_Dataset", help="validation aps path")
+    # 添加分布式训练相关参数
+    parser.add_argument('--local_rank', type=int, default=int(os.environ.get('LOCAL_RANK', -1)))
     opts=parser.parse_args()
+    local_rank = opts.local_rank
 
     with open(os.path.abspath('./config.yaml'),'r') as f:
         opt = edict(yaml.safe_load(f))
@@ -47,28 +55,53 @@ if __name__ == '__main__':
     np.random.seed(opt.seed)
     torch.manual_seed(opt.seed)
     torch.cuda.manual_seed_all(opt.seed)
+    # 首先初始化分布式环境
+    torch.distributed.init_process_group(
+        backend='nccl',
+        init_method='env://'  # 使用环境变量初始化
+    )
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f'cuda:{local_rank}')
     # data
-    train_dataset = Dataset_EFNet(mode="test",base_path=opts.base_path, norm=False)
-    train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=4,shuffle=True)
-    test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
-    test_dataloader = DataLoader(test_dataset,batch_size=1,pin_memory=True,num_workers=4,shuffle=False)
+    train_dataset = Dataset_EFNet(mode="train",base_path=opts.base_path, norm=False)
+    # 然后创建分布式采样器
+    train_sampler = DistributedSampler(train_dataset)
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=opt.bs,
+        sampler=train_sampler,
+        num_workers=4,
+        pin_memory=True
+    )
+
+    # train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=4,shuffle=True)
+    # test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
+    # test_dataloader = DataLoader(test_dataset,batch_size=1,pin_memory=True,num_workers=4,shuffle=False)
     # save dir
+    # 创建结果目录
     results_dir = os.path.abspath('./Results')
     os.makedirs(results_dir,exist_ok=True)
     exp_name = opt.exp_name
     os.makedirs(f"{results_dir}/{exp_name}",exist_ok=True)
-    tb = SummaryWriter(log_dir=f"{results_dir}/{exp_name}",flush_secs=10)
-    # net
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
-    print(f"CUDA是否可用: {torch.cuda.is_available()}")
-    print(f"CUDA设备数量: {torch.cuda.device_count()}")
-    # device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
-    print(f"device: {device}")
+
     net = EF_SAI_Net()
-    net = torch.nn.DataParallel(net)
+    # net = torch.nn.DataParallel(net)
+    net = torch.nn.SyncBatchNorm.convert_sync_batchnorm(net)
+    net = net.cuda(local_rank)
+    net = DistributedDataParallel(net, device_ids=[local_rank])
+    sam_model = SimSiam(models.__dict__['resnet50'],dim=2048,pred_dim=512 )
+    sam_model = sam_model.cuda(local_rank)
+    sam_model = DistributedDataParallel(sam_model, device_ids=[local_rank])
+    #  固定特征维度为2048 固定预测头隐层维度为512
+    if local_rank == 0:  # 只在主进程记录日志
+        tb = SummaryWriter(log_dir=f"{results_dir}/{exp_name}", flush_secs=10)  
+        
+         
     if os.path.exists(f"{results_dir}/{exp_name}/model/checkpoint.pth"):
-        net.load_state_dict(torch.load(f"{results_dir}/{exp_name}/model/checkpoint.pth"))
-    net = net.to(device)
+        # 加载到正确设备并处理DDP模型
+        checkpoint = torch.load(f"{results_dir}/{exp_name}/model/checkpoint.pth", 
+                          map_location=f'cuda:{local_rank}')
+        net.module.load_state_dict(checkpoint)
     net = net.train()
     optimizer = torch.optim.Adam(net.parameters(),lr=opt.lr) # default: 5e-4
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,64)
@@ -81,6 +114,7 @@ if __name__ == '__main__':
     # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,gamma=(5.e-5/5.e-4)**(1/max_epochs))
     ssim_module = SSIM(data_range=1.0, channel=1) 
     for epoch in range(max_epochs):
+        train_sampler.set_epoch(epoch)  # 添加这行确保每个epoch数据分布不同
         # BN eval 在xx次数后冻结bn的参数
         if epoch == fix_bn_epochs:
             print("turn BN to eval mode ...")
@@ -115,10 +149,41 @@ if __name__ == '__main__':
                 event_refocus = torch.sum(torch.abs(event),dim=2,keepdim=False) 
                 event_refocus = (event_refocus - event_refocus.min())/(event_refocus.max()-event_refocus.min())
                 event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
-
                 # event_attention_features, frame_attention_features, event_frame_attention_features
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
-                loss = criterion(refocus_data,features,pred)
+
+                #
+                # 将单通道图像扩展为3通道以适应 ResNet
+                event_refocus_3c = event_refocus.repeat(1, 3, 1, 1) if event_refocus.shape[1] == 1 else event_refocus
+                frame_refocus_3c = frame_refocus.repeat(1, 3, 1, 1) if frame_refocus.shape[1] == 1 else frame_refocus
+                eframe_refocus_3c = eframe_refocus.repeat(1, 3, 1, 1) if eframe_refocus.shape[1] == 1 else eframe_refocus
+                pred_3c = pred.repeat(1, 3, 1, 1) if pred.shape[1] == 1 else pred
+
+
+                # 计算 SimSiam 损失
+                cos_sim = nn.CosineSimilarity(dim=1).cuda(local_rank)
+                simsiam_losses = []
+                
+                # 计算各对图像之间的 SimSiam 损失
+                p1, p2, z1, z2 = sam_model(x1=pred_3c, x2=event_refocus_3c)
+                simsiam_loss_ep = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
+                simsiam_losses.append(simsiam_loss_ep)
+
+                # 2. frame_refocus 和 pred 之间的损失
+                p1, p2, z1, z2 = sam_model(x1=pred_3c, x2=frame_refocus_3c)
+                simsiam_loss_fp = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
+                simsiam_losses.append(simsiam_loss_fp)
+
+                # 3. eframe_refocus 和 pred 之间的损失
+                p1, p2, z1, z2 = sam_model(x1=pred_3c, x2=eframe_refocus_3c)
+                simsiam_loss_efp = -(cos_sim(p1, z2.detach()).mean() + cos_sim(p2, z1.detach()).mean()) * 0.5
+                simsiam_losses.append(simsiam_loss_efp)
+
+                # 合并所有 SimSiam 损失
+                simsiam_loss_total = simsiam_loss_ep *1e-1 + simsiam_loss_fp * 1e1 + simsiam_loss_efp * 1e-3
+
+                content_loss = criterion(refocus_data,features,pred)
+                loss = content_loss +  1e-1 * simsiam_loss_total
                 loss_record['train'] += loss.item()
                 loss.backward()
                 optimizer.step()
@@ -132,12 +197,13 @@ if __name__ == '__main__':
                 fsai_ssim+=ssim_module(frame_refocus,gt)
                 pbar.set_postfix_str(f"loss:{loss.item():.4f}")
                 pbar.update(1)
-            tb.add_scalar(f"train/loss",loss_record['train']/len(train_dataloader),epoch)
-            tb.add_scalar(f"train/psnr",psnr_record['train']/len(train_dataloader),epoch)
-            tb.add_scalar(f"train/ssim",ssim_record['train']/len(train_dataloader),epoch)
-            tb.add_scalar(f"train/fsai_ssim", fsai_ssim/len(train_dataloader),epoch)
-            tb.add_scalar(f"train/fsai_psnr",fsai_psnr/len(train_dataloader),epoch)
-            tb.add_scalar(f"train/lr",optimizer.param_groups[0]["lr"],epoch)
+            if local_rank == 0:  # 只在主进程记录日志
+                tb.add_scalar(f"train/loss",loss_record['train']/len(train_dataloader),epoch)
+                tb.add_scalar(f"train/psnr",psnr_record['train']/len(train_dataloader),epoch)
+                tb.add_scalar(f"train/ssim",ssim_record['train']/len(train_dataloader),epoch)
+                tb.add_scalar(f"train/fsai_ssim", fsai_ssim/len(train_dataloader),epoch)
+                tb.add_scalar(f"train/fsai_psnr",fsai_psnr/len(train_dataloader),epoch)
+                tb.add_scalar(f"train/lr",optimizer.param_groups[0]["lr"],epoch)
             print(f"[epoch {epoch}|train]: average loss: {loss_record['train']/len(train_dataloader)}.")
             print(f"[epoch {epoch}|train]: average psnr: {psnr_record['train']/len(train_dataloader)}.")
             # view
@@ -194,7 +260,8 @@ if __name__ == '__main__':
                 print(f"[epoch {epoch}|val]: average psnr: {psnr_record['val']/len(test_dataloader)}.")
         '''
         # save model
-        if epoch % save_model_epochs ==0 or epoch == max_epochs:
-            os.makedirs(f"{results_dir}/{exp_name}/model",exist_ok=True)
-            torch.save(net.state_dict(),f"{results_dir}/{exp_name}/model/epoch_{epoch:04d}.pth")
+        if local_rank == 0:  # 只在主进程记录日志
+            if epoch % save_model_epochs == 0 or epoch == max_epochs:
+                os.makedirs(f"{results_dir}/{exp_name}/model",exist_ok=True)
+                torch.save(net.module.state_dict(),f"{results_dir}/{exp_name}/model/epoch_{epoch:04d}.pth")
 

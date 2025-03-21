@@ -8,3 +8,5 @@ save_model_epoch: 10 # save mode every {save_model_epoch} epoch
 save_skip: 10 # save every {save_skip} batch's result per epoch
 #tensorboard --logdir=./Results/exp_EF --port=6005
 
+# torchrun --nproc_per_node=4 UnsupervisedTrain.py
+
