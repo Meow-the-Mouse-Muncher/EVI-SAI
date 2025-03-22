@@ -43,7 +43,7 @@ def psnr(img1:Tensor,img2:Tensor):
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument("--base_path", type=str, default="/mnt/home_ssd/sjy/EF-SAI/EF_Dataset", help="validation aps path")
+    parser.add_argument("--base_path", type=str, default="/home_ssd/sjy/EVI-SAI/EF_Dataset", help="validation aps path")
     opts=parser.parse_args()
 
     with open(os.path.abspath('./config.yaml'),'r') as f:
@@ -54,8 +54,8 @@ if __name__ == '__main__':
     torch.manual_seed(opt.seed)
     torch.cuda.manual_seed_all(opt.seed)
     # data
-    train_dataset = Dataset_EFNet(mode="train",base_path=opts.base_path, norm=False)
-    train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=4,shuffle=True)
+    train_dataset = Dataset_EFNet(mode="test",base_path=opts.base_path, norm=False)
+    train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=4,shuffle=True,drop_last=True)
     test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
     test_dataloader = DataLoader(test_dataset,batch_size=1,pin_memory=True,num_workers=4,shuffle=False)
     # save dir
@@ -82,10 +82,10 @@ if __name__ == '__main__':
     tb = SummaryWriter(log_dir=f"{results_dir}/{exp_name}", flush_secs=10)  
         
     if os.path.exists(f"{results_dir}/{exp_name}/model/checkpoint.pth"):
-        # 加载到正确设备并处理DDP模型
         checkpoint = torch.load(f"{results_dir}/{exp_name}/model/checkpoint.pth", map_location=device)
         net.module.load_state_dict(checkpoint)
     net = net.train()
+    sam_model.train()
     optimizer = torch.optim.Adam(net.parameters(),lr=opt.lr) # default: 5e-4
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,64)
     criterion = TotalLoss()
@@ -133,26 +133,27 @@ if __name__ == '__main__':
                 event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
 
-                # 计算 SimSiam 损失
-                cos_sim = nn.CosineSimilarity(dim=1).cuda(device)
+                # # 计算 SimSiam 损失
+                # cos_sim = nn.CosineSimilarity(dim=1).cuda(device)
                 
-                # 计算各对图像之间的 SimSiam 损失
-                p1_ep, p2_ep, z1_ep, z2_ep = sam_model(x1=pred, x2=event_refocus)
-                simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
+                # # 计算各对图像之间的 SimSiam 损失
+                # p1_ep, p2_ep, z1_ep, z2_ep = sam_model(x1=pred, x2=gt)
+                # simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
 
-                # 2. frame_refocus 和 pred 之间的损失
-                p1_fp, p2_fp, z1_fp, z2_fp = sam_model(x1=pred, x2=frame_refocus)
-                simsiam_loss_fp = -(cos_sim(p1_fp, z2_fp.detach()).mean() + cos_sim(p2_fp, z1_fp.detach()).mean()) * 0.5
+                # # 2. frame_refocus 和 pred 之间的损失
+                # p1_fp, p2_fp, z1_fp, z2_fp = sam_model(x1=pred, x2=frame_refocus)
+                # simsiam_loss_fp = -(cos_sim(p1_fp, z2_fp.detach()).mean() + cos_sim(p2_fp, z1_fp.detach()).mean()) * 0.5
 
-                # 3. eframe_refocus 和 pred 之间的损失
-                p1_efp, p2_efp, z1_efp, z2_efp = sam_model(x1=pred, x2=eframe_refocus)
-                simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
+                # # 3. eframe_refocus 和 pred 之间的损失
+                # p1_efp, p2_efp, z1_efp, z2_efp = sam_model(x1=pred, x2=eframe_refocus)
+                # simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
 
                 # 合并所有 SimSiam 损失
-                simsiam_loss_total = simsiam_loss_ep *1e-1 + simsiam_loss_fp * 1e1 + simsiam_loss_efp * 1e-3
+                # simsiam_loss_total = simsiam_loss_ep *1e-1 + simsiam_loss_fp * 1e1 + simsiam_loss_efp * 1e-3
+                # simsiam_loss_total = simsiam_loss_ep
 
-                content_loss = criterion(refocus_data,features,pred)
-                # loss = content_loss +  1e-1 * simsiam_loss_total
+                content_loss = criterion(refocus_data,features,pred,gt)
+                # loss = content_loss +  0.1*simsiam_loss_total
                 loss = content_loss
                 loss_record['train'] += loss.item()
                 loss.backward()
