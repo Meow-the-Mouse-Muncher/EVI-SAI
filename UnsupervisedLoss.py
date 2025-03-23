@@ -193,17 +193,16 @@ class TotalLoss:
         self.MSE = nn.MSELoss() 
         self.L1 = nn.L1Loss() 
         self.SSIM =SSIM(data_range=1.0, channel=1) 
-        self.SF = SpatialFrequencyLoss() 
+        self.SF = SpatialFrequencyLoss().to(device)
         self.VIF = VisualInformationFidelity()
-        self.mi_loss = MutualInformationLoss(32,8)
-        self.mi_initialized = False  # 跟踪是否已移动到设备
+        self.mi_loss = MutualInformationLoss(32,8).to(device)
         ## distrubute weights
         self.contentW = weights[0]
         self.pixelW = weights[1]
         self.SF_W = weights[2]
         # self.mi_weight = 1e-3  # 互信息损失权重
 
-    def __call__(self, data_refocus,features,pred,gt): #
+    def __call__(self, data_refocus,features,pred,gt,weight_EF): #
         current_device = features[0].device
         event_features = features[0] # b 32 256 256
         frame_features = features[1] # b 32 256 256
@@ -213,21 +212,12 @@ class TotalLoss:
         frame = data_refocus[1].to(current_device)
         eframe = data_refocus[2].to(current_device)
 
-        
-        # # 第一次调用时将互信息损失移到正确设备
-        # if not self.mi_initialized:
-        #     self.mi_loss = self.mi_loss.to(current_device)
-        #     self.mi_initialized = True
 
 
         b,c,h,w = pred.shape
         pred = pred.to(current_device) # B 1 256 256
 
-                ## gray to 3-dim image to fit vgg16
-        if c == 1:
-            pred = pred.repeat(1,3,1,1)
-        if gt.shape[1] == 1:
-            gt = gt.repeat(1,3,1,1)
+
 
         
         # ## gray to 3-dim image to fit vgg16
@@ -237,35 +227,42 @@ class TotalLoss:
         # pred = pred.repeat(1, 3, 1, 1) if pred.shape[1] == 1 else pred
             
         ## calculate perceptual loss  frame 和 预测结果
-        frame_features = self.vgg(gt)
-        pred_features = self.vgg(pred)
-        L_frame = []
-        for i in range(4):
-            recon_frame = frame_features[i]
-            recon_hat = pred_features[i]
-            L_frame.append(self.MSE(recon_frame,recon_hat))
+        ## gray to 3-dim image to fit vgg16
+        # if c == 1:
+        #     pred = pred.repeat(1,3,1,1)
+        # if gt.shape[1] == 1:
+        #     gt = gt.repeat(1,3,1,1)
+        # frame_features = self.vgg(gt)
+        # pred_features = self.vgg(pred)
+        # L_frame = []
+        # for i in range(4):
+        #     recon_frame = frame_features[i]
+        #     recon_hat = pred_features[i]
+        #     L_frame.append(self.MSE(recon_frame,recon_hat))
 
-        L_perceptual = (self.pWei[0]*L_frame[0] + self.pWei[1]*L_frame[1] + self.pWei[2]*L_frame[2] + self.pWei[3]*L_frame[3])
+        # L_perceptual = (self.pWei[0]*L_frame[0] + self.pWei[1]*L_frame[1] + self.pWei[2]*L_frame[2] + self.pWei[3]*L_frame[3])
 
       
         ## calculate pixel loss
-        # L_SSIM = self.SSIM(pred,frame) + 1e-4*self.SSIM(pred,eframe) + 1e-2*self.SSIM(pred,event)
-        # L_L1 = 10*self.L1(pred,frame) + 1e-4*self.L1(pred,eframe) + 1e-2*self.L1(pred,event)
+        # L_SSIM = -(weight_EF[1]*self.SSIM(pred,frame) + weight_EF[2]*self.SSIM(pred,eframe) + weight_EF[0]*self.SSIM(pred,event))
+        L_SSIM = -(5*self.SSIM(pred,frame) + 1e-1*self.SSIM(pred,eframe) + self.SSIM(pred,event))
+        # L_L1 = self.L1(pred,frame) + 1e-4*self.L1(pred,eframe) + 1e-2*self.L1(pred,event)
         # L_SSIM = self.SSIM(pred,gt) 
-        L_L1 = 10*self.L1(pred,gt)
+        # L_L1 = 10*self.L1(pred,gt)
         # calculate total variation regularization (anisotropic version)
         # https://www.wikiwand.com/en/Total_variation_denoising
         # 传统版本
         # diff_i = torch.sum(torch.abs(pred[:, :, :, 1:] - pred[:, :, :, :-1]))
         # diff_j = torch.sum(torch.abs(pred[:, :, 1:, :] - pred[:, :, :-1, :]))
         # L_tv = (diff_i + diff_j) / float(c * h * w)
-        L_SF= self.SF(pred)
+        L_SF= 1-self.SF(pred) # 空间分辨率最好高一点
         
         # 计算互信息损失
-        # L_mutual_info = self.mi_loss(event_features, frame_features, eframe_features)
+        L_mutual_info = self.mi_loss(event_features, frame_features, eframe_features)
         ## total lossss
-        # total_loss =   1e-2*L_SF + 1e-1*L_mutual_info + 10*L_SSIM
-        total_loss =   1e-2*L_SF  + L_L1 +L_perceptual
+        total_loss =   L_SF + 1e-1*L_mutual_info + L_SSIM
+        # total_loss =   L_SF  + 10*L_L1  + 1e-1*L_mutual_info
+        # total_loss =   1e-2*L_SF
         
 
         return total_loss

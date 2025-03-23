@@ -1,6 +1,7 @@
 import os
 import cv2
 import yaml
+import gc
 import random
 import numpy as np
 import argparse
@@ -54,7 +55,7 @@ if __name__ == '__main__':
     torch.manual_seed(opt.seed)
     torch.cuda.manual_seed_all(opt.seed)
     # data
-    train_dataset = Dataset_EFNet(mode="test",base_path=opts.base_path, norm=False)
+    train_dataset = Dataset_EFNet(mode="train",base_path=opts.base_path, norm=False)
     train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=4,shuffle=True,drop_last=True)
     test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
     test_dataloader = DataLoader(test_dataset,batch_size=1,pin_memory=True,num_workers=4,shuffle=False)
@@ -76,7 +77,7 @@ if __name__ == '__main__':
 
     # sam_model = SimSiam(models.__dict__['resnet50'],dim=2048,pred_dim=512 )
 
-    sam_model = SimSiamLight(dim=512, pred_dim=128)
+    sam_model = SimSiamLight(dim=512, pred_dim=128,input_channels=30)
     sam_model = sam_model.to(device) 
     sam_model = torch.nn.DataParallel(sam_model)
     tb = SummaryWriter(log_dir=f"{results_dir}/{exp_name}", flush_secs=10)  
@@ -120,48 +121,46 @@ if __name__ == '__main__':
                 gt = gt.to(device)
                 frame = frame.to(device)
                 eframe = eframe.to(device)
+
                 net.zero_grad()
                 optimizer.zero_grad()
                 ## 数据集提前归一化好了
-                pred,features = net(event, frame, eframe, time_step)
+                pred,features,weight_EF = net(event, frame, eframe, time_step)
 
                 frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                 eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
                 # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
-                event_refocus = torch.sum(torch.abs(event),dim=2,keepdim=False) 
-                event_refocus = (event_refocus - event_refocus.min())/(event_refocus.max()-event_refocus.min())
+                event_frame = torch.sum(torch.abs(event),dim=2,keepdim=False) 
+                event_refocus = (event_frame - event_frame.min())/(event_frame.max()-event_frame.min())
                 event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
-
+                # event_features,frame_features,eframe_features = features[0],features[1],features[2]   # b 32 256 256
                 # # 计算 SimSiam 损失
-                # cos_sim = nn.CosineSimilarity(dim=1).cuda(device)
-                
-                # # 计算各对图像之间的 SimSiam 损失
-                # p1_ep, p2_ep, z1_ep, z2_ep = sam_model(x1=pred, x2=gt)
-                # simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
+                cos_sim = nn.CosineSimilarity(dim=1).cuda(device)
+                N,C,H,W = frame.shape   
+                f_image = pred.repeat(1,C,1,1)
+                # # 计算各对图像之间的 SimSiam 损失 加入权重
+                p1_ep, p2_ep, z1_ep, z2_ep = sam_model(x1=f_image, x2=event_frame)
+                simsiam_loss_ep = -((weight_EF[:,0,...].squeeze() * cos_sim(p1_ep, z2_ep.detach())).mean() +(weight_EF[:,0,...].squeeze() * cos_sim(p2_ep, z1_ep.detach())).mean()) * 0.5
 
-                # # 2. frame_refocus 和 pred 之间的损失
-                # p1_fp, p2_fp, z1_fp, z2_fp = sam_model(x1=pred, x2=frame_refocus)
+                p1_fp, p2_fp, z1_fp, z2_fp = sam_model(x1=f_image, x2=frame)
                 # simsiam_loss_fp = -(cos_sim(p1_fp, z2_fp.detach()).mean() + cos_sim(p2_fp, z1_fp.detach()).mean()) * 0.5
+                simsiam_loss_fp = -((weight_EF[:,1,...].squeeze() * cos_sim(p1_fp, z2_fp.detach())).mean() +(weight_EF[:,1,...].squeeze() * cos_sim(p2_fp, z1_fp.detach())).mean()) * 0.5
 
-                # # 3. eframe_refocus 和 pred 之间的损失
-                # p1_efp, p2_efp, z1_efp, z2_efp = sam_model(x1=pred, x2=eframe_refocus)
+                p1_efp, p2_efp, z1_efp, z2_efp = sam_model(x1=f_image, x2=eframe)
                 # simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
+                simsiam_loss_efp = -((weight_EF[:,2,...].squeeze() * cos_sim(p1_efp, z2_efp.detach())).mean() +(weight_EF[:,2,...].squeeze() * cos_sim(p2_efp, z1_efp.detach())).mean()) * 0.5
 
                 # 合并所有 SimSiam 损失
-                # simsiam_loss_total = simsiam_loss_ep *1e-1 + simsiam_loss_fp * 1e1 + simsiam_loss_efp * 1e-3
-                # simsiam_loss_total = simsiam_loss_ep
+                simsiam_loss_total = simsiam_loss_ep  + simsiam_loss_fp  + simsiam_loss_efp 
+                simsiam_loss_total = simsiam_loss_ep
 
-                content_loss = criterion(refocus_data,features,pred,gt)
-                # loss = content_loss +  0.1*simsiam_loss_total
-                loss = content_loss
+                content_loss = criterion(refocus_data,features,pred,gt,weight_EF)
+                loss = content_loss +  simsiam_loss_total
+                # loss = content_loss
                 loss_record['train'] += loss.item()
                 loss.backward()
-                optimizer.step()
-                
-                # 清理缓存
-                torch.cuda.empty_cache()
-                    
+                optimizer.step()               
                 psnr_record['train'] += psnr(pred,gt)
                 ssim_record['train'] += ssim_module(pred,gt)
                 fsai_psnr+=psnr(frame_refocus,gt)
@@ -174,6 +173,18 @@ if __name__ == '__main__':
                 tb.add_scalar(f"train/fsai_ssim", fsai_ssim/len(train_dataloader),epoch)
                 tb.add_scalar(f"train/fsai_psnr",fsai_psnr/len(train_dataloader),epoch)
                 tb.add_scalar(f"train/lr",optimizer.param_groups[0]["lr"],epoch)
+                
+                del p1_ep, p2_ep, z1_ep, z2_ep
+                del p1_fp, p2_fp, z1_fp, z2_fp
+                del p1_efp, p2_efp, z1_efp, z2_efp
+                del simsiam_loss_ep, simsiam_loss_fp, simsiam_loss_efp, simsiam_loss_total
+                del event_frame, event_refocus, frame_refocus, eframe_refocus
+                del f_image
+                
+                # 清理缓存
+                gc.collect()
+                torch.cuda.empty_cache()
+
             print(f"[epoch {epoch}|train]: average loss: {loss_record['train']/len(train_dataloader)}.")
             print(f"[epoch {epoch}|train]: average psnr: {psnr_record['train']/len(train_dataloader)}.")
             # view

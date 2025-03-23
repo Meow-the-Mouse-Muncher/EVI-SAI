@@ -254,11 +254,11 @@ class EF_SAI_Net(nn.Module):
         inpe2 = inpe[:,:,1,:,:]
         inp = torch.cat((inpe1,inpe2),axis = 1)
         ca = self.ca1(x3, inp, y3, inpf, z3, inpfe)  # ChannelAttentionv2(32, 30)
-        weight_EF = torch.split(ca, 1, dim=1)
-
-        x3 = x3*weight_EF[0] # b 32 256 256
-        y3 = y3*weight_EF[1]
-        z3 = z3*weight_EF[2]  
+        weight_EF = ca
+        # b 32 256 256
+        x3 = x3 * weight_EF[:, 0:1, :, :]  # 使用切片而非索引
+        y3 = y3 * weight_EF[:, 1:2, :, :]
+        z3 = z3 * weight_EF[:, 2:3, :, :]
         # x event   y framae   z event frame
         inp_fetures = torch.cat((x3, y3, z3), dim=1) 
         # now 权重选择完毕，得到了 xyz 三个特征 b 96 256 256
@@ -270,7 +270,7 @@ class EF_SAI_Net(nn.Module):
         # loss_Parameter = [e_orinal_features, f_orinal_features, ef_orinal_features, 
         #                   event_attention_features, frame_attention_features, event_frame_attention_features]
         loss_Parameter = [event_attention_features, frame_attention_features, event_frame_attention_features]
-        return outputs, loss_Parameter
+        return outputs, loss_Parameter,weight_EF
 
 
 if __name__ == '__main__':

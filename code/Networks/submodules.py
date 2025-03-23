@@ -801,7 +801,7 @@ class FusionSwinTransformerBlock(nn.Module):
 
 ## 轻量级siam
 class LightEncoder(nn.Module):
-    def __init__(self, in_channels=1, dim=512):
+    def __init__(self, in_channels=30, dim=512):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 32, 3, 2, 1),    # 原尺寸/2
@@ -825,9 +825,9 @@ class LightEncoder(nn.Module):
         return self.encoder(x)
         
 class SimSiamLight(nn.Module):
-    def __init__(self, dim=512, pred_dim=128):
+    def __init__(self, dim=512, pred_dim=128,input_channels=30):
         super().__init__()
-        self.encoder = LightEncoder(in_channels=1, dim=dim)
+        self.encoder = LightEncoder(in_channels=input_channels, dim=dim)
         
         # 预测器
         self.predictor = nn.Sequential(
@@ -905,3 +905,16 @@ class SimSiam(nn.Module):
         p2 = self.predictor(z2) # NxC
 
         return p1, p2, z1.detach(), z2.detach()
+
+# # 修改SimSiam损失计算，减少中间变量
+# with torch.cuda.amp.autocast(enabled=False):  # 禁用混合精度以避免额外内存使用
+#     # 使用 torch.no_grad() 计算不需要梯度的部分
+#     with torch.no_grad():
+#         z1_ep_detached = z1_ep.detach()
+#         z2_ep_detached = z2_ep.detach()
+    
+#     # 计算损失
+#     simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep_detached).mean() + cos_sim(p2_ep, z1_ep_detached).mean()) * 0.5
+    
+#     # 显式删除不再需要的中间变量
+#     del z1_ep_detached, z2_ep_detached
