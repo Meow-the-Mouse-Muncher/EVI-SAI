@@ -4,7 +4,7 @@ bs: 6 # batch size
 exp_name: exp_EF # experiment name
 max_epoch: 450
 fix_bn_epoch: 300 # if current epoch > fix_bn_epoch, turn BN to eval mode
-save_model_epoch: 10 # save mode every {save_model_epoch} epoch
+save_model_epoch: 5 # save mode every {save_model_epoch} epoch
 save_skip: 10 # save every {save_skip} batch's result per epoch
 #tensorboard --logdir=./Results/exp_EF --port=6005
 
