@@ -256,7 +256,7 @@ class EF_SAI_Net(nn.Module):
         ca = self.ca1(x3, inp, y3, inpf, z3, inpfe)  # ChannelAttentionv2(32, 30)
         weight_EF = ca
         # b 32 256 256
-        x3 = x3 * weight_EF[:, 0:1, :, :]  # 使用切片而非索引
+        x3 = x3 * weight_EF[:, 0:1, :, :] 
         y3 = y3 * weight_EF[:, 1:2, :, :]
         z3 = z3 * weight_EF[:, 2:3, :, :]
         # x event   y framae   z event frame

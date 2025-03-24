@@ -9,6 +9,12 @@ from pytorch_metric_learning import losses
 from pytorch_metric_learning.utils import logging_presets
 
 import os
+def adjust(init, fin, step, fin_step):
+    if fin_step == 0:
+        return  fin
+    deta = fin - init
+    adj = min(init + deta * step / fin_step, fin)
+    return adj
 # os.environ['CUDA_VISIBLE_DEVICES']="1" # choose GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class Vgg16(nn.Module):
@@ -47,7 +53,57 @@ class Vgg16(nn.Module):
     
 
 
-
+class TenengradSharpnessLoss(nn.Module):
+    def __init__(self, threshold=0.1):
+        super(TenengradSharpnessLoss, self).__init__()
+        self.threshold = threshold
+        
+        # 定义Sobel算子
+        self.sobel_x_kernel = torch.tensor([
+            [-1, 0, 1],
+            [-2, 0, 2],
+            [-1, 0, 1]
+        ], dtype=torch.float32).view(1, 1, 3, 3)
+        
+        self.sobel_y_kernel = torch.tensor([
+            [-1, -2, -1],
+            [0, 0, 0],
+            [1, 2, 1]
+        ], dtype=torch.float32).view(1, 1, 3, 3)
+    
+    def forward(self, x):
+        # 移动卷积核到正确的设备
+        self.sobel_x_kernel = self.sobel_x_kernel.to(x.device)
+        self.sobel_y_kernel = self.sobel_y_kernel.to(x.device)
+        
+        b, c, h, w = x.shape
+        tenengrad_val = 0.0
+        
+        for i in range(c):
+            # 提取单通道
+            img_channel = x[:, i:i+1, :, :]
+            
+            # 应用Sobel算子
+            grad_x = F.conv2d(img_channel, self.sobel_x_kernel, padding=1)
+            grad_y = F.conv2d(img_channel, self.sobel_y_kernel, padding=1)
+            
+            # 计算梯度幅度
+            gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
+            
+            # 应用阈值（可选）
+            if self.threshold > 0:
+                gradient_magnitude = gradient_magnitude * (gradient_magnitude > self.threshold)
+            
+            # 累加所有通道的Tenengrad值
+            tenengrad_val += torch.mean(gradient_magnitude**2)
+        
+        # 归一化为每通道的均值
+        tenengrad_val /= c
+        
+        # 归一化到合理范围
+        sharpness = torch.tanh(tenengrad_val / 100)
+        
+        return 1 - sharpness  # 返回损失值
     
 
 from torch.distributions import Normal, Independent, kl
@@ -148,7 +204,10 @@ class MutualInformationLoss(nn.Module):
         mi_fe = torch.clip(self.mi_frame_event(frame, event),-1,1)
         mi_ff = torch.clip(self.mi_frame_eframe(frame, eframe),-1,1)
         mi_ef = torch.clip(self.mi_event_eframe(event, eframe),-1,1)
-        
+        # mi_fe = self.mi_frame_event(frame, event)
+        # mi_ff = self.mi_frame_eframe(frame, eframe)
+        # mi_ef = self.mi_event_eframe(event, eframe)
+
         # 返回总的互信息损失
         return mi_fe + 0.1*mi_ff + 0.1*mi_ef
 
@@ -196,13 +255,14 @@ class TotalLoss:
         self.SF = SpatialFrequencyLoss().to(device)
         self.VIF = VisualInformationFidelity()
         self.mi_loss = MutualInformationLoss(32,8).to(device)
+        self.sharpness_loss = TenengradSharpnessLoss()
         ## distrubute weights
         self.contentW = weights[0]
         self.pixelW = weights[1]
         self.SF_W = weights[2]
         # self.mi_weight = 1e-3  # 互信息损失权重
 
-    def __call__(self, data_refocus,features,pred,gt,weight_EF): #
+    def __call__(self, data_refocus,features,pred,gt,weight_EF,epoch,num_epochs): #
         current_device = features[0].device
         event_features = features[0] # b 32 256 256
         frame_features = features[1] # b 32 256 256
@@ -212,7 +272,7 @@ class TotalLoss:
         frame = data_refocus[1].to(current_device)
         eframe = data_refocus[2].to(current_device)
 
-
+ 
 
         b,c,h,w = pred.shape
         pred = pred.to(current_device) # B 1 256 256
@@ -245,8 +305,8 @@ class TotalLoss:
       
         ## calculate pixel loss
         # L_SSIM = -(weight_EF[1]*self.SSIM(pred,frame) + weight_EF[2]*self.SSIM(pred,eframe) + weight_EF[0]*self.SSIM(pred,event))
-        L_SSIM = -(5*self.SSIM(pred,frame) + 1e-1*self.SSIM(pred,eframe) + self.SSIM(pred,event))
-        # L_L1 = self.L1(pred,frame) + 1e-4*self.L1(pred,eframe) + 1e-2*self.L1(pred,event)
+        L_SSIM = 1-(5*self.SSIM(pred,frame) + 1e-1*self.SSIM(pred,eframe) + self.SSIM(pred,event))
+        L_L1 = self.L1(pred,frame) + 1e-4*self.L1(pred,eframe) + 1e-2*self.L1(pred,event)
         # L_SSIM = self.SSIM(pred,gt) 
         # L_L1 = 10*self.L1(pred,gt)
         # calculate total variation regularization (anisotropic version)
@@ -255,13 +315,16 @@ class TotalLoss:
         # diff_i = torch.sum(torch.abs(pred[:, :, :, 1:] - pred[:, :, :, :-1]))
         # diff_j = torch.sum(torch.abs(pred[:, :, 1:, :] - pred[:, :, :-1, :]))
         # L_tv = (diff_i + diff_j) / float(c * h * w)
-        L_SF= 1-self.SF(pred) # 空间分辨率最好高一点
+        L_sharpness_loss = self.sharpness_loss(pred)
+        # L_SF= 1-self.SF(pred) # 空间分辨率最好高一点
         
         # 计算互信息损失
         L_mutual_info = self.mi_loss(event_features, frame_features, eframe_features)
         ## total lossss
-        total_loss =   L_SF + 1e-1*L_mutual_info + L_SSIM
-        # total_loss =   L_SF  + 10*L_L1  + 1e-1*L_mutual_info
+        # print(f"L_SSIM:{L_SSIM},L_L1:{L_L1},L_sharpness_loss:{L_sharpness_loss},L_mutual_info:{L_mutual_info}")
+    
+        total_loss =   1e-2*L_sharpness_loss + L_mutual_info* adjust(0, 1, epoch, num_epochs) + 10*L_SSIM
+        # total_loss =   10*L_L1  +  10*L_SSIM
         # total_loss =   1e-2*L_SF
         
 

@@ -36,13 +36,15 @@ def frame_refocus(frame, threshold=1e-6, norm_type='minmax', use_mask=False):
         frame: 输入tensor，形状为[N,C,H,W]
         threshold: 非零元素的判定阈值，默认1e-6
         norm_type: 归一化方式，可选 'minmax' 或 'mean'，默认'minmax'
-        use_mask: 是否使用mask来过滤非零元素，默认True
+        use_mask: 是否使用mask来过滤非零元素，默认False
     Returns:
         归一化后的tensor，形状为[N,1,H,W]
     """
     if not frame.is_floating_point():
         frame = frame.float()
     frame_copy = frame.clone()
+    batch_size = frame.shape[0]
+    
     # 根据use_mask参数决定是否使用mask
     if use_mask:
         mask = frame_copy.abs().gt(threshold)
@@ -54,42 +56,125 @@ def frame_refocus(frame, threshold=1e-6, norm_type='minmax', use_mask=False):
         # 直接在通道维度上求和
         normalized = torch.sum(frame_copy, dim=1, keepdim=True)
     
-    # 使用tensor操作进行归一化
+    # 使用批量操作进行归一化 - 避免for循环
     if norm_type == 'minmax':
         if use_mask:
             non_zero = normalized.abs().gt(threshold)
-            if torch.any(non_zero):
-                valid_values = normalized.masked_select(non_zero)
-                min_val = valid_values.min()
-                max_val = valid_values.max()
-                scale = max_val.sub(min_val)
-                
-                if scale > threshold:
-                    normalized.sub_(min_val).div_(scale)
-                    normalized.mul_(non_zero)
+            # 为每个样本计算最小值和最大值
+            flattened = normalized.view(batch_size, -1)
+            flattened_mask = non_zero.view(batch_size, -1)
+            
+            # 创建一个大值填充矩阵用于min计算
+            # 和一个小值填充矩阵用于max计算
+            filled_for_min = flattened.clone()
+            filled_for_max = flattened.clone()
+            
+            # 将非有效元素替换为不影响min/max计算的值
+            filled_for_min.masked_fill_(~flattened_mask, float('inf'))
+            filled_for_max.masked_fill_(~flattened_mask, float('-inf'))
+            
+            # 并行计算每个样本的min/max
+            min_vals = filled_for_min.min(dim=1, keepdim=True)[0]
+            max_vals = filled_for_max.max(dim=1, keepdim=True)[0]
+            
+            # 处理全部被掩盖的情况（所有值都是inf/-inf）
+            all_masked = (~torch.any(flattened_mask, dim=1)).view(-1, 1)
+            min_vals.masked_fill_(all_masked, 0.0)
+            max_vals.masked_fill_(all_masked, 0.0)
+            
+            # 重塑为广播兼容的形状
+            min_vals = min_vals.view(batch_size, 1, 1, 1)
+            max_vals = max_vals.view(batch_size, 1, 1, 1)
+            scales = (max_vals - min_vals).clamp(min=threshold)
+            
+            # 创建一个掩码，表示哪些样本需要归一化
+            valid_scales = scales > threshold
+            
+            # 对每个样本应用min-max归一化
+            normalized = torch.where(
+                valid_scales,
+                (normalized - min_vals) / scales,
+                normalized
+            )
+            # 应用非零掩码
+            normalized = normalized * non_zero.float()
         else:
-            min_val = normalized.min()
-            max_val = normalized.max()
-            scale = max_val.sub(min_val)
-            if scale > threshold:
-                normalized.sub_(min_val).div_(scale)
+            # 对每个样本单独计算min/max
+            min_vals = normalized.view(batch_size, -1).min(dim=1, keepdim=True)[0].view(batch_size, 1, 1, 1)
+            max_vals = normalized.view(batch_size, -1).max(dim=1, keepdim=True)[0].view(batch_size, 1, 1, 1)
+            scales = (max_vals - min_vals).clamp(min=threshold)
+            
+            # 创建一个掩码，表示哪些样本需要归一化
+            valid_scales = scales > threshold
+            
+            # 对每个样本应用min-max归一化
+            normalized = torch.where(
+                valid_scales,
+                (normalized - min_vals) / scales,
+                normalized
+            )
     
     elif norm_type == 'mean':
         if use_mask:
             non_zero = normalized.abs().gt(threshold)
-            if torch.any(non_zero):
-                valid_values = normalized.masked_select(non_zero)
-                mean = valid_values.mean()
-                std = valid_values.std()
-                
-                if std > threshold:
-                    normalized.sub_(mean).div_(std)
-                    normalized.mul_(non_zero)
+            # 为每个样本计算均值和标准差
+            flattened = normalized.view(batch_size, -1)
+            flattened_mask = non_zero.view(batch_size, -1)
+            
+            # 使用掩码和加权操作并行计算均值
+            # 创建浮点型掩码(1.0表示有效值, 0.0表示无效值)
+            float_mask = flattened_mask.float()
+            
+            # 计算每个样本的有效元素数量
+            valid_counts = float_mask.sum(dim=1, keepdim=True).clamp(min=threshold)
+            
+            # 计算每个样本有效元素的总和
+            masked_sums = (flattened * float_mask).sum(dim=1, keepdim=True)
+            
+            # 计算均值 (总和/有效数量)
+            means = masked_sums / valid_counts
+            
+            # 计算标准差: sqrt(E[(X - mean)²])
+            # 先计算每个样本中(x - mean)²的和
+            sq_diff_sum = ((flattened - means) * float_mask).pow(2).sum(dim=1, keepdim=True)
+            
+            # 计算标准差
+            stds = (sq_diff_sum / valid_counts).sqrt()
+            
+            # 处理全部被掩盖的情况
+            all_masked = (valid_counts <= threshold).view(-1, 1)
+            means.masked_fill_(all_masked, 0.0)
+            stds.masked_fill_(all_masked, 0.0)
+            
+            # 重塑为广播兼容的形状
+            means = means.view(batch_size, 1, 1, 1)
+            stds = stds.view(batch_size, 1, 1, 1)
+            
+            # 创建一个掩码，表示哪些样本需要归一化
+            valid_stds = stds > threshold
+            
+            # 对每个样本应用均值-标准差归一化
+            normalized = torch.where(
+                valid_stds,
+                (normalized - means) / stds.clamp(min=threshold),
+                normalized
+            )
+            # 应用非零掩码
+            normalized = normalized * non_zero.float()
         else:
-            mean = normalized.mean()
-            std = normalized.std()
-            if std > threshold:
-                normalized.sub_(mean).div_(std)
+            # 对每个样本单独计算均值和标准差
+            means = normalized.view(batch_size, -1).mean(dim=1, keepdim=True).view(batch_size, 1, 1, 1)
+            stds = normalized.view(batch_size, -1).std(dim=1, keepdim=True).view(batch_size, 1, 1, 1)
+            
+            # 创建一个掩码，表示哪些样本需要归一化
+            valid_stds = stds > threshold
+            
+            # 对每个样本应用均值-标准差归一化
+            normalized = torch.where(
+                valid_stds,
+                (normalized - means) / stds.clamp(min=threshold),
+                normalized
+            )
     
     return torch.clamp(normalized, 0, 1)
 
