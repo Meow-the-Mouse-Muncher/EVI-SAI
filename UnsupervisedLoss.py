@@ -78,32 +78,29 @@ class TenengradSharpnessLoss(nn.Module):
         self.sobel_y_kernel = self.sobel_y_kernel.to(x.device)
         
         b, c, h, w = x.shape
-        tenengrad_val = 0.0
+        # 并行处理所有通道 - 使用分组卷积
+        sobel_x_kernel_expanded = self.sobel_x_kernel.repeat(c, 1, 1, 1)
+        sobel_y_kernel_expanded = self.sobel_y_kernel.repeat(c, 1, 1, 1)
         
-        for i in range(c):
-            # 提取单通道
-            img_channel = x[:, i:i+1, :, :]
-            
-            # 应用Sobel算子
-            grad_x = F.conv2d(img_channel, self.sobel_x_kernel, padding=1)
-            grad_y = F.conv2d(img_channel, self.sobel_y_kernel, padding=1)
-            
-            # 计算梯度幅度
-            gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
-            
-            # 应用阈值（可选）
-            if self.threshold > 0:
-                gradient_magnitude = gradient_magnitude * (gradient_magnitude > self.threshold)
-            
-            # 累加所有通道的Tenengrad值
-            tenengrad_val += torch.mean(gradient_magnitude**2)
+        # 重新组织输入数据，将每个通道作为单独样本处理
+        x_reshaped = x.view(b*c, 1, h, w)
         
-        # 归一化为每通道的均值
-        tenengrad_val /= c
+        # 应用Sobel算子
+        grad_x = F.conv2d(x_reshaped, sobel_x_kernel_expanded, padding=1, groups=c)
+        grad_y = F.conv2d(x_reshaped, sobel_y_kernel_expanded, padding=1, groups=c)
+        
+        # 计算梯度幅度
+        gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
+        
+        # 应用阈值（可选）
+        if self.threshold > 0:
+            gradient_magnitude = gradient_magnitude * (gradient_magnitude > self.threshold)
+        
+        # 计算Tenengrad值
+        tenengrad_val = torch.mean(gradient_magnitude**2)
         
         # 归一化到合理范围
         sharpness = torch.tanh(tenengrad_val / 100)
-        
         return 1 - sharpness  # 返回损失值
     
 
@@ -178,23 +175,10 @@ class TotalLoss:
         # 计算 SimSiam 损失
         N,C,H,W = e_frame.shape   
         pred_frame = pred.repeat(1,C,1,1)
-        # # 计算各对图像之间的 SimSiam 损失 加入权重
-        p1_ep, p2_ep, z1_ep, z2_ep = sam_model(x1=pred_frame, x2=e_frame)
-        simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
-        # simsiam_loss_ep = -((weight_EF[:,0,...].squeeze() * cos_sim(p1_ep, z2_ep.detach())).mean() +(weight_EF[:,0,...].squeeze() * cos_sim(p2_ep, z1_ep.detach())).mean()) * 0.5
-
-        p1_fp, p2_fp, z1_fp, z2_fp = sam_model(x1=pred_frame, x2=f_frame)
-        simsiam_loss_fp = -(cos_sim(p1_fp, z2_fp.detach()).mean() + cos_sim(p2_fp, z1_fp.detach()).mean()) * 0.5
-        # simsiam_loss_fp = -((weight_EF[:,1,...].squeeze() * cos_sim(p1_fp, z2_fp.detach())).mean() +(weight_EF[:,1,...].squeeze() * cos_sim(p2_fp, z1_fp.detach())).mean()) * 0.5
-
-        p1_efp, p2_efp, z1_efp, z2_efp = sam_model(x1=pred_frame, x2=ef_frame)
-        simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
-        # simsiam_loss_efp = -((weight_EF[:,2,...].squeeze() * cos_sim(p1_efp, z2_efp.detach())).mean() +(weight_EF[:,2,...].squeeze() * cos_sim(p2_efp, z1_efp.detach())).mean()) * 0.5
-
-        # 合并所有 SimSiam 损失
-        # if(i%100==0):
-        #     print(f"simsiam_loss_ep:{simsiam_loss_ep.item()} simsiam_loss_fp:{simsiam_loss_fp.item()} simsiam_loss_efp:{simsiam_loss_efp.item()}")
-        simsiam_loss_total = 2*simsiam_loss_ep  + 10*simsiam_loss_fp  + 0.7*simsiam_loss_efp 
+        simsiam_e_loss, simsiam_f_loss, simsiam_ef_loss = sam_model(pred_frame, e_frame, f_frame, ef_frame)
+        simsiam_e_loss = torch.mean(simsiam_e_loss)
+        simsiam_f_loss = torch.mean(simsiam_f_loss)
+        simsiam_ef_loss = torch.mean(simsiam_ef_loss)
 
 
 
@@ -224,7 +208,7 @@ class TotalLoss:
       
         ## calculate pixel loss
         # L_SSIM = -(weight_EF[1]*self.SSIM(pred,frame) + weight_EF[2]*self.SSIM(pred,eframe) + weight_EF[0]*self.SSIM(pred,event))
-        L_SSIM = 1-(5*self.SSIM(pred,frame_refocus) + 1e-1*self.SSIM(pred,eframe_refocus) + self.SSIM(pred,event_refocus))
+        
         # L_L1 = self.L1(pred,frame) + 1e-4*self.L1(pred,eframe) + 1e-2*self.L1(pred,event)
         # L_SSIM = self.SSIM(pred,gt) 
         # L_L1 = 10*self.L1(pred,gt)
@@ -236,15 +220,40 @@ class TotalLoss:
         # L_tv = (diff_i + diff_j) / float(c * h * w)
         L_sharpness_loss = self.sharpness_loss(pred)
         # L_SF= 1-self.SF(pred) # 空间分辨率最好高一点
+        eps = 1e-5
         
-        # 计算互信息损失
-        L_mutual_info = torch.mean(self.mi_loss(event_features, frame_features, eframe_features))
+        # 计算特征间的互信息损失
+        mi_f_e ,mi_f_ef ,mi_ef_f = self.mi_loss(event_features, frame_features), \
+        self.mi_loss(frame_features, eframe_features),\
+        self.mi_loss(eframe_features, event_features)
+
+        mi_f_e = torch.mean(mi_f_e)
+        mi_f_ef = torch.mean(mi_f_ef)
+        mi_ef_f = torch.mean(mi_ef_f)
+        ssim_e , ssim_f , ssim_ef = self.SSIM(pred,event_refocus), self.SSIM(pred,frame_refocus), self.SSIM(pred,eframe_refocus)
+
+        #记录一下loss
+        loss_unnormalized = L_sharpness_loss \
+        +ssim_e+ssim_f+ssim_ef\
+        +mi_f_e+mi_f_ef+mi_ef_f\
+        +simsiam_e_loss+simsiam_f_loss+simsiam_ef_loss
+
+        L_mutual_info = mi_f_e/(mi_f_e.detach()+eps) \
+                        + mi_f_ef/(mi_f_ef.detach()+eps)\
+                        + mi_ef_f/(mi_ef_f.detach()+eps)
+        simsiam_loss_total = simsiam_e_loss/(simsiam_e_loss.detach()+eps) \
+                            + simsiam_f_loss/(simsiam_f_loss.detach()+eps) \
+                            + simsiam_ef_loss/(simsiam_ef_loss.detach()+eps)
+        L_SSIM = -(ssim_e + ssim_f + ssim_ef)
+        L_sharpness_loss = L_sharpness_loss/(L_sharpness_loss.detach()+eps)
+
         ## total lossss
         # print(f"L_SSIM:{L_SSIM},L_L1:{L_L1},L_sharpness_loss:{L_sharpness_loss},L_mutual_info:{L_mutual_info}")
         # * adjust(0, 1, epoch, num_epochs) 
-        total_loss =   1e-2*L_sharpness_loss + L_mutual_info+L_SSIM +  1e-1*simsiam_loss_total
+        total_loss =   L_sharpness_loss + 3*L_SSIM + L_mutual_info + simsiam_loss_total
+
         # total_loss =   10*L_L1  +  10*L_SSIM
         # total_loss =   1e-2*L_SF
         
 
-        return total_loss
+        return total_loss,loss_unnormalized
