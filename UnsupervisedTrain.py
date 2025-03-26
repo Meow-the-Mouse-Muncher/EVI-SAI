@@ -9,8 +9,6 @@ from tqdm import tqdm
 from easydict import EasyDict as edict
 import torch
 from torch.utils.data import DataLoader
-
-from prefetch_generator import BackgroundGenerator
 from torch.utils.tensorboard import SummaryWriter
 from torch import Tensor
 from math import log10
@@ -19,7 +17,7 @@ import sys
 from code.EF_Dataset import Dataset_EFNet
 from code.Networks.EF_SAI_Net import EF_SAI_Net
 from UnsupervisedLoss import TotalLoss
-from code.Networks.submodules import SimSiam,SimSiamLight_loss,Mutual_info_reg
+from code.Networks.submodules import SimSiam,SimSiamLight_loss,MutualInformationLoss
 import torchvision.models as models
 import utils
 from pytorch_msssim import SSIM
@@ -49,40 +47,6 @@ def adjust(init, fin, step, fin_step):
     return adj
 #
     
-class DataLoaderX(DataLoader):
-    def __iter__(self):
-        return  BackgroundGenerator(super().__iter__())
-    
-class SafeDataLoaderX(DataLoader):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.bg_generator = None
-        
-    def __iter__(self):
-        # 确保旧的生成器被清理
-        if self.bg_generator is not None:
-            del self.bg_generator
-            gc.collect()
-        # 创建新的生成器
-        self.bg_generator = BackgroundGenerator(super().__iter__())
-        return self.bg_generator
-        
-    def __enter__(self):
-        return self
-        
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # 确保资源被释放
-        if self.bg_generator is not None:
-            del self.bg_generator
-            self.bg_generator = None
-        gc.collect()
-        
-    def close(self):
-        """显式关闭方法，可在epoch结束时调用"""
-        if self.bg_generator is not None:
-            del self.bg_generator
-            self.bg_generator = None
-        gc.collect()
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
@@ -98,8 +62,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(opt.seed)
     # data
 
-    train_dataset = Dataset_EFNet(mode="train",base_path=opts.base_path, norm=False)
-    # train_dataloader = DataLoaderX(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True,prefetch_factor=2 )
+    train_dataset = Dataset_EFNet(mode="test",base_path=opts.base_path, norm=False)
     train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True )
     test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
     test_dataloader = DataLoader(test_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True )
@@ -124,7 +87,7 @@ if __name__ == '__main__':
     sam_model = sam_model.to(device) 
     sam_model = torch.nn.DataParallel(sam_model)
     # 无bn和droupt层，所以MIloss不需要train和eval
-    MILoss_model = Mutual_info_reg(32, 8)
+    MILoss_model = MutualInformationLoss(32, 8)
     MILoss_model = MILoss_model.to(device)
     MILoss_model = torch.nn.DataParallel(MILoss_model)
 
@@ -241,40 +204,40 @@ if __name__ == '__main__':
                         break
             scheduler.step()
         # eval
-        with torch.no_grad():
-            with tqdm(total=len(test_dataloader)) as pbar:
-                pbar.set_description_str(f'[epoch {epoch}|Val]')
-                net.eval()
-                sam_model.eval()
-                for i,(event,frame,eframe,gt) in enumerate(test_dataloader):
-                    time_step = event.shape[1]
-                    event = event.to(device)
-                    gt = gt.to(device)
-                    frame = frame.to(device)
-                    eframe = eframe.to(device) 
-                    ## 数据集提前归一化好了
-                    pred,features,weight_EF = net(event, frame, eframe, time_step)
-                    frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
-                    eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
-                    # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
-                    event_frame = torch.sum(torch.abs(event),dim=2,keepdim=False) 
-                    event_refocus = (event_frame - event_frame.min())/(event_frame.max()-event_frame.min())
-                    event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
-                    refocus_data = [event_refocus,frame_refocus,eframe_refocus]
-                    # event_features,frame_features,eframe_features = features[0],features[1],features[2]   # b 32 256 256
-                    ori_image = [event_frame,frame,eframe]
-                    loss,loss_unnormal= criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
-                    loss_record['val'] += loss_unnormal.item()
-                    psnr_record['val'] += psnr(pred,gt)
-                    pbar.set_postfix_str(f"loss:{loss_unnormal.item():.4f}")
-                    pbar.update(1)
-                    if i in [0,1]:
-                        utils.tb_image(opt,tb,epoch,'val',f"pred_{i:04d}",pred[0:1,...])
-                        utils.tb_image(opt,tb,epoch,'val',f"gt_{i:04d}",gt[0:1,...])
-                tb.add_scalar(f"val/loss",loss_record['val']/len(test_dataloader),epoch)
-                tb.add_scalar(f"val/psnr",psnr_record['val']/len(test_dataloader),epoch)
-                print(f"[epoch {epoch}|val]: average loss: {loss_record['val']/len(test_dataloader)}.")
-                print(f"[epoch {epoch}|val]: average psnr: {psnr_record['val']/len(test_dataloader)}.")
+        # with torch.no_grad():
+        #     with tqdm(total=len(test_dataloader)) as pbar:
+        #         pbar.set_description_str(f'[epoch {epoch}|Val]')
+        #         net.eval()
+        #         sam_model.eval()
+        #         for i,(event,frame,eframe,gt) in enumerate(test_dataloader):
+        #             time_step = event.shape[1]
+        #             event = event.to(device)
+        #             gt = gt.to(device)
+        #             frame = frame.to(device)
+        #             eframe = eframe.to(device) 
+        #             ## 数据集提前归一化好了
+        #             pred,features,weight_EF = net(event, frame, eframe, time_step)
+        #             frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
+        #             eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
+        #             # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
+        #             event_frame = torch.sum(torch.abs(event),dim=2,keepdim=False) 
+        #             event_refocus = (event_frame - event_frame.min())/(event_frame.max()-event_frame.min())
+        #             event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
+        #             refocus_data = [event_refocus,frame_refocus,eframe_refocus]
+        #             # event_features,frame_features,eframe_features = features[0],features[1],features[2]   # b 32 256 256
+        #             ori_image = [event_frame,frame,eframe]
+        #             loss,loss_unnormal= criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
+        #             loss_record['val'] += loss_unnormal.item()
+        #             psnr_record['val'] += psnr(pred,gt)
+        #             pbar.set_postfix_str(f"loss:{loss_unnormal.item():.4f}")
+        #             pbar.update(1)
+        #             if i in [0,1]:
+        #                 utils.tb_image(opt,tb,epoch,'val',f"pred_{i:04d}",pred[0:1,...])
+        #                 utils.tb_image(opt,tb,epoch,'val',f"gt_{i:04d}",gt[0:1,...])
+        #         tb.add_scalar(f"val/loss",loss_record['val']/len(test_dataloader),epoch)
+        #         tb.add_scalar(f"val/psnr",psnr_record['val']/len(test_dataloader),epoch)
+        #         print(f"[epoch {epoch}|val]: average loss: {loss_record['val']/len(test_dataloader)}.")
+        #         print(f"[epoch {epoch}|val]: average psnr: {psnr_record['val']/len(test_dataloader)}.")
         # 清理一下缓存
         gc.collect()
         torch.cuda.empty_cache()

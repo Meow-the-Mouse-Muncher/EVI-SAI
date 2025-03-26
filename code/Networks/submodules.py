@@ -1020,9 +1020,6 @@ class MutualInformationLoss(nn.Module):
         mi_f_e = torch.clip(self.mi_frame_event(frame, event),-1,1)
         mi_f_ef = torch.clip(self.mi_frame_eframe(frame, eframe),-1,1)
         mi_ef_f = torch.clip(self.mi_event_eframe(event, eframe),-1,1)
-        # mi_fe = self.mi_frame_event(frame, event)
-        # mi_ff = self.mi_frame_eframe(frame, eframe)
-        # mi_ef = self.mi_event_eframe(event, eframe)
 
         # 返回总的互信息损失
         return mi_f_e ,mi_f_ef ,mi_ef_f
