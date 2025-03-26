@@ -1,5 +1,5 @@
 seed: 42
-lr: 5.e-1
+lr: 1.e-4
 bs: 6 # batch size
 exp_name: exp_EF # experiment name
 max_epoch: 450

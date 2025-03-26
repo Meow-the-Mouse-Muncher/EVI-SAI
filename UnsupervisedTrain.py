@@ -62,7 +62,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(opt.seed)
     # data
 
-    train_dataset = Dataset_EFNet(mode="test",base_path=opts.base_path, norm=False)
+    train_dataset = Dataset_EFNet(mode="train",base_path=opts.base_path, norm=False)
     train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True )
     test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
     test_dataloader = DataLoader(test_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True )
