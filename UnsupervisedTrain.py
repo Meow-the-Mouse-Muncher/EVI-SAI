@@ -148,13 +148,13 @@ if __name__ == '__main__':
                 eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
                 # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
                 event_frame = torch.sum(torch.abs(event),dim=2,keepdim=False) 
-                event_refocus = (event_frame - event_frame.min())/(event_frame.max()-event_frame.min())
-                event_refocus=utils.frame_refocus(event_refocus, threshold=1e-5, norm_type='minmax')
+                event_frame = (event_frame - event_frame.min())/(event_frame.max()-event_frame.min()+1e-5)
+                event_refocus=utils.frame_refocus(event_frame, threshold=1e-5, norm_type='minmax')
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
                 # event_features,frame_features,eframe_features = features[0],features[1],features[2]   # b 32 256 256
                 ori_image = [event_frame,frame,eframe]
-                loss,loss_unnormal = criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
-                loss_record['train'] += loss_unnormal.item()
+                loss = criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
+                loss_record['train'] += loss.item()
                 loss.backward()
                 optimizer.step()   
 
@@ -162,7 +162,7 @@ if __name__ == '__main__':
                 ssim_record['train'] += ssim_module(pred,gt).item()
                 fsai_psnr+=psnr(frame_refocus,gt)
                 fsai_ssim+=ssim_module(frame_refocus,gt).item()
-                pbar.set_postfix_str(f"loss:{loss_unnormal.item():.4f}")
+                pbar.set_postfix_str(f"loss:{loss.item():.4f}")
                 pbar.update(1)
                 # tb.add_scalar(f"train/loss",loss_record['train']/len(train_dataloader),epoch)
                 # tb.add_scalar(f"train/psnr",psnr_record['train']/len(train_dataloader),epoch)
@@ -226,10 +226,10 @@ if __name__ == '__main__':
         #             refocus_data = [event_refocus,frame_refocus,eframe_refocus]
         #             # event_features,frame_features,eframe_features = features[0],features[1],features[2]   # b 32 256 256
         #             ori_image = [event_frame,frame,eframe]
-        #             loss,loss_unnormal= criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
-        #             loss_record['val'] += loss_unnormal.item()
+        #             loss= criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
+        #             loss_record['val'] += loss.item()
         #             psnr_record['val'] += psnr(pred,gt)
-        #             pbar.set_postfix_str(f"loss:{loss_unnormal.item():.4f}")
+        #             pbar.set_postfix_str(f"loss:{loss.item():.4f}")
         #             pbar.update(1)
         #             if i in [0,1]:
         #                 utils.tb_image(opt,tb,epoch,'val',f"pred_{i:04d}",pred[0:1,...])
