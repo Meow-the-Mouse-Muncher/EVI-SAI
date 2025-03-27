@@ -231,26 +231,27 @@ class TotalLoss:
         # +simsiam_e_loss+simsiam_f_loss+simsiam_ef_loss
         
         # 提取的特征之间的互信息损失最小化
-        L_mutual_info = 3*mi_f_e/(mi_f_e.abs()+eps) \
-                        + mi_f_ef/(mi_f_ef.abs()+eps)\
-                        + mi_ef_f/(mi_ef_f.abs()+eps)
+        L_mutual_info = 3*mi_f_e/(mi_f_e.abs().detach()+eps) \
+                        + mi_f_ef/(mi_f_ef.abs().detach()+eps)\
+                        + mi_ef_f/(mi_ef_f.abs().detach()+eps)
+        L_mutual_info.retain_grad()
         # 预测图和输入图的互信息损失最大化
-        simsiam_loss_total = simsiam_e_loss/(simsiam_e_loss.abs()+eps) \
-                            + simsiam_f_loss/(simsiam_f_loss.abs()+eps) \
-                            + simsiam_ef_loss/(simsiam_ef_loss.abs()+eps)
+        simsiam_loss_total = simsiam_e_loss/(simsiam_e_loss.abs().detach()+eps) \
+                            + simsiam_f_loss/(simsiam_f_loss.abs().detach()+eps) \
+                            + simsiam_ef_loss/(simsiam_ef_loss.abs().detach()+eps)
         # 预测图和fsai方法的ssim最大化 加权平均啊
         L_SSIM = -((e_weight*ssim_e + f_weight*ssim_f + ef_weight*ssim_ef)/(\
-                e_weight.abs()+f_weight.abs()+ef_weight.abs()+eps)\
-                    ).mean()
-        L_SSIM = -(0.5*ssim_e + 5*ssim_f + 0.05*ssim_ef).mean()
+                    e_weight.abs().detach()\
+                    +f_weight.abs().detach()\
+                    +ef_weight.abs().detach()
+                    +eps)).mean()
+        # L_SSIM = -(0.5*ssim_e + 5*ssim_f + 0.05*ssim_ef).mean()
         # 平均梯度最大化
-        L_sharpness_loss = L_sharpness_loss/(L_sharpness_loss.abs()+eps)
+        L_sharpness_loss = L_sharpness_loss/(L_sharpness_loss.abs().detach()+eps)
 
         ## total lossss
         # * adjust(0, 1, epoch, num_epochs) 
         total_loss =   1e-1*L_sharpness_loss + L_SSIM+ L_mutual_info + simsiam_loss_total
-        print(f"e_weight.grad={e_weight.grad},f_weight.grad={f_weight.grad},ef_weight.grad={ef_weight.grad}")
-        print(L_mutual_info.grad)
         # total_loss =   L_sharpness_loss + 100*L_SSIM + L_mutual_info + simsiam_loss_total
 
         

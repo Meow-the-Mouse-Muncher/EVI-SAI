@@ -140,7 +140,7 @@ if __name__ == '__main__':
                 gt = gt.to(device)
                 frame = frame.to(device)
                 eframe = eframe.to(device)
-                optimizer.zero_grad(set_to_none=True)  # 更彻底地清理梯度
+                # optimizer.zero_grad(set_to_none=True)  # 更彻底地清理梯度
                 ## 数据集提前归一化好了
                 pred,features,weight_EF,ori_features = net(event, frame, eframe, time_step)
 
@@ -156,7 +156,6 @@ if __name__ == '__main__':
                 loss_record['train'] += loss.item()
                 loss.backward()
                 optimizer.step()   
-
                 psnr_record['train'] += psnr(pred,gt)
                 ssim_record['train'] += ssim_module(pred,gt).item()
                 fsai_psnr+=psnr(frame_refocus,gt)
