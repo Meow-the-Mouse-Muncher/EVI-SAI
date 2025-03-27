@@ -856,7 +856,7 @@ class SimSiamLight_loss(nn.Module):
         self.ef_siam = SimSiamLight(dim=dim, pred_dim=pred_dim,input_channels=input_channels)
   
         
-    def forward(self, pre, event, frame, eframe):
+    def forward(self, pre, event, frame, eframe,weight_EF):
         # # 计算各对图像之间的 SimSiam 损失 加入权重
         p1_ep, p2_ep, z1_ep, z2_ep = self.e_siam(x1=pre, x2=event)
         simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
@@ -866,7 +866,11 @@ class SimSiamLight_loss(nn.Module):
 
         p1_efp, p2_efp, z1_efp, z2_efp = self.ef_siam(x1=pre, x2=eframe)
         simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
-        return simsiam_loss_ep, simsiam_loss_fp, simsiam_loss_efp
+        e_weight =  weight_EF[:, 0:1, :, :] 
+        f_weight =  weight_EF[:, 1:2, :, :]
+        ef_weight = weight_EF[:, 2:3, :, :]
+ 
+        return e_weight*simsiam_loss_ep, f_weight*simsiam_loss_fp, ef_weight*simsiam_loss_efp
 
 # Copyright (c) Facebook, Inc. and its affiliates.
 # All rights reserved.

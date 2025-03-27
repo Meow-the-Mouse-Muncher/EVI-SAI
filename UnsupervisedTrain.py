@@ -62,7 +62,7 @@ if __name__ == '__main__':
     torch.cuda.manual_seed_all(opt.seed)
     # data
 
-    train_dataset = Dataset_EFNet(mode="train",base_path=opts.base_path, norm=False)
+    train_dataset = Dataset_EFNet(mode="test",base_path=opts.base_path, norm=False)
     train_dataloader = DataLoader(train_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True )
     test_dataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
     test_dataloader = DataLoader(test_dataset,batch_size=opt.bs,pin_memory=True,num_workers=min(os.cpu_count()//2,8),shuffle=True,drop_last=True )
@@ -104,7 +104,7 @@ if __name__ == '__main__':
     sam_model.train()
     params = list(net.parameters()) + list(sam_model.parameters()) + list(MILoss_model.parameters())
     optimizer = torch.optim.Adam(params,lr=opt.lr) # default: 5e-4
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,64)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,128)
 
     criterion = TotalLoss(MILoss_model)
     # train
@@ -189,7 +189,7 @@ if __name__ == '__main__':
                         gt = gt.to(device)
                         frame = frame.to(device)
                         eframe = eframe.to(device)
-                        pred,_,__= net(event, frame, eframe, time_step)
+                        pred,_,weight_EF= net(event, frame, eframe, time_step)
                         frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                         eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
                         # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
@@ -201,6 +201,9 @@ if __name__ == '__main__':
                         utils.tb_image(opt,tb,epoch,'train',f"frame_refocus_{i:04d}",frame_refocus[0:1,...])
                         utils.tb_image(opt,tb,epoch,'train',f"pred_{i:04d}",pred[0:1,...])
                         utils.tb_image(opt,tb,epoch,'train',f"gt_{i:04d}",(gt[0:1,...]))
+                        tb.add_scalar(f"train/e_weight",weight_EF[0].sum().item(),epoch)
+                        tb.add_scalar(f"train/f_weight",weight_EF[1].sum().item(),epoch)
+                        tb.add_scalar(f"train/ef_weight",weight_EF[2].sum().item(),epoch)
                         break
             scheduler.step()
         # eval
