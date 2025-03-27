@@ -211,9 +211,10 @@ class EF_SAI_Net(nn.Module):
         z3 = self.convfe3(z)
         z3_shortcut = z3
         # 源特征 event frame  eframe
-        # e_orinal_features = x3
-        # f_orinal_features = y3
-        # ef_orinal_features = z3
+        e_orinal_features = x3
+        f_orinal_features = y3
+        ef_orinal_features = z3
+        e_orinal_features = [e_orinal_features, f_orinal_features, ef_orinal_features]
         #----------------------------------------------------------------------------------------#
 
         #--------------------------------------CME 模块------------------------------------------#
@@ -270,7 +271,7 @@ class EF_SAI_Net(nn.Module):
         # loss_Parameter = [e_orinal_features, f_orinal_features, ef_orinal_features, 
         #                   event_attention_features, frame_attention_features, event_frame_attention_features]
         loss_Parameter = [event_attention_features, frame_attention_features, event_frame_attention_features]
-        return outputs, loss_Parameter,weight_EF
+        return outputs, loss_Parameter,weight_EF, e_orinal_features
 
 
 if __name__ == '__main__':

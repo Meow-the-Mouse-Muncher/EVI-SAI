@@ -83,7 +83,7 @@ if __name__ == '__main__':
 
 
     # sam_model = SimSiam(models.__dict__['resnet50'],dim=2048,pred_dim=512 )
-    sam_model = SimSiamLight_loss(dim=512, pred_dim=128,input_channels=30)
+    sam_model = SimSiamLight_loss(dim=512, pred_dim=128,input_channels=32)
     sam_model = sam_model.to(device) 
     sam_model = torch.nn.DataParallel(sam_model)
     # 无bn和droupt层，所以MIloss不需要train和eval
@@ -104,7 +104,7 @@ if __name__ == '__main__':
     sam_model.train()
     params = list(net.parameters()) + list(sam_model.parameters()) + list(MILoss_model.parameters())
     optimizer = torch.optim.Adam(params,lr=opt.lr) # default: 5e-4
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,128)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,64)
 
     criterion = TotalLoss(MILoss_model)
     # train
@@ -142,7 +142,7 @@ if __name__ == '__main__':
                 eframe = eframe.to(device)
                 optimizer.zero_grad(set_to_none=True)  # 更彻底地清理梯度
                 ## 数据集提前归一化好了
-                pred,features,weight_EF = net(event, frame, eframe, time_step)
+                pred,features,weight_EF,ori_features = net(event, frame, eframe, time_step)
 
                 frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                 eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
@@ -152,8 +152,7 @@ if __name__ == '__main__':
                 event_refocus=utils.frame_refocus(event_frame, threshold=1e-5, norm_type='minmax')
                 refocus_data = [event_refocus,frame_refocus,eframe_refocus]
                 # event_features,frame_features,eframe_features = features[0],features[1],features[2]   # b 32 256 256
-                ori_image = [event_frame,frame,eframe]
-                loss = criterion(refocus_data,features,ori_image,pred,gt,weight_EF,epoch,max_epochs,sam_model)
+                loss = criterion(refocus_data,features,ori_features,pred,gt,weight_EF,epoch,max_epochs,sam_model)
                 loss_record['train'] += loss.item()
                 loss.backward()
                 optimizer.step()   
@@ -178,6 +177,7 @@ if __name__ == '__main__':
             tb.add_scalar(f"train/lr",optimizer.param_groups[0]["lr"],epoch)
             print(f"[epoch {epoch}|train]: average loss: {loss_record['train']/len(train_dataloader)}.")
             print(f"[epoch {epoch}|train]: average psnr: {psnr_record['train']/len(train_dataloader)}.")
+            print(f"[epoch {epoch}|train]: average ssim: {ssim_record['train']/len(train_dataloader)}.")
             # view
             with torch.no_grad():
                 for i,(event,frame,eframe,gt) in enumerate(train_dataloader):
@@ -189,7 +189,7 @@ if __name__ == '__main__':
                         gt = gt.to(device)
                         frame = frame.to(device)
                         eframe = eframe.to(device)
-                        pred,_,weight_EF= net(event, frame, eframe, time_step)
+                        pred,_,weight_EF,__= net(event, frame, eframe, time_step)
                         frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
                         eframe_refocus=utils.frame_refocus(eframe, threshold=1e-5, norm_type='minmax')
                         # 将event n c 2 h w 转换为 n c h w  对2 进行绝对值求和并归一化
@@ -241,6 +241,9 @@ if __name__ == '__main__':
         #         tb.add_scalar(f"val/psnr",psnr_record['val']/len(test_dataloader),epoch)
         #         print(f"[epoch {epoch}|val]: average loss: {loss_record['val']/len(test_dataloader)}.")
         #         print(f"[epoch {epoch}|val]: average psnr: {psnr_record['val']/len(test_dataloader)}.")
+
+
+
         # 清理一下缓存
         gc.collect()
         torch.cuda.empty_cache()

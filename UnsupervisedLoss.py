@@ -156,7 +156,7 @@ class TotalLoss:
         self.SF_W = weights[2]
         # self.mi_weight = 1e-3  # 互信息损失权重
 
-    def __call__(self, data_refocus,features,ori_image,pred,gt,weight_EF,epoch,num_epochs,sam_model=None): #
+    def __call__(self, data_refocus,features,ori_features,pred,gt,weight_EF,epoch,num_epochs,sam_model=None): #
         event_features = features[0] # b 32 256 256
         frame_features = features[1] # b 32 256 256
         eframe_features = features[2] # b 32 256 256
@@ -165,16 +165,14 @@ class TotalLoss:
         frame_refocus = data_refocus[1]
         eframe_refocus = data_refocus[2]
 
-        e_frame = ori_image[0]
-        f_frame = ori_image[1]
-        ef_frame = ori_image[2]
+        e_frame = ori_features[0]
+        f_frame = ori_features[1]
+        ef_frame = ori_features[2]
 
         e_weight =  weight_EF[:, 0:1, :, :] 
         f_weight =  weight_EF[:, 1:2, :, :]
         ef_weight =  weight_EF[:, 2:3, :, :]
  
-
-
         # ## gray to 3-dim image to fit vgg16
         # frame = frame.repeat(1, 3, 1, 1) if frame.shape[1] == 1 else frame
         # event = event.repeat(1, 3, 1, 1) if event.shape[1] == 1 else event
@@ -214,9 +212,7 @@ class TotalLoss:
         L_sharpness_loss = self.sharpness_loss(pred)
         # L_SF= 1-self.SF(pred) # 空间分辨率最好高一点
         # 计算 SimSiam 损失
-        N,C,H,W = e_frame.shape   
-        pred_frame = pred.repeat(1,C,1,1)
-        simsiam_e_loss, simsiam_f_loss, simsiam_ef_loss = sam_model(pred_frame, e_frame, f_frame, ef_frame,weight_EF)
+        simsiam_e_loss, simsiam_f_loss, simsiam_ef_loss = sam_model(pred, e_frame, f_frame, ef_frame,weight_EF)
         simsiam_e_loss = torch.mean(simsiam_e_loss)
         simsiam_f_loss = torch.mean(simsiam_f_loss)
         simsiam_ef_loss = torch.mean(simsiam_ef_loss)
@@ -235,23 +231,26 @@ class TotalLoss:
         # +simsiam_e_loss+simsiam_f_loss+simsiam_ef_loss
         
         # 提取的特征之间的互信息损失最小化
-        L_mutual_info = 3*mi_f_e/(mi_f_e.detach().abs()+eps) \
-                        + mi_f_ef/(mi_f_ef.detach().abs()+eps)\
-                        + mi_ef_f/(mi_ef_f.detach().abs()+eps)
+        L_mutual_info = 3*mi_f_e/(mi_f_e.abs()+eps) \
+                        + mi_f_ef/(mi_f_ef.abs()+eps)\
+                        + mi_ef_f/(mi_ef_f.abs()+eps)
         # 预测图和输入图的互信息损失最大化
-        simsiam_loss_total = simsiam_e_loss/(simsiam_e_loss.detach().abs()+eps) \
-                            + simsiam_f_loss/(simsiam_f_loss.detach().abs()+eps) \
-                            + simsiam_ef_loss/(simsiam_ef_loss.detach().abs()+eps)
+        simsiam_loss_total = simsiam_e_loss/(simsiam_e_loss.abs()+eps) \
+                            + simsiam_f_loss/(simsiam_f_loss.abs()+eps) \
+                            + simsiam_ef_loss/(simsiam_ef_loss.abs()+eps)
         # 预测图和fsai方法的ssim最大化 加权平均啊
-        L_SSIM = -((e_weight*ssim_e + f_weight*ssim_f + ef_weight*ssim_ef)/(e_weight.detach().abs()\
-                            + f_weight.detach().abs()+ ef_weight.detach().abs()+eps)).mean()
+        L_SSIM = -((e_weight*ssim_e + f_weight*ssim_f + ef_weight*ssim_ef)/(\
+                e_weight.abs()+f_weight.abs()+ef_weight.abs()+eps)\
+                    ).mean()
+        L_SSIM = -(0.5*ssim_e + 5*ssim_f + 0.05*ssim_ef).mean()
         # 平均梯度最大化
-        L_sharpness_loss = L_sharpness_loss/(L_sharpness_loss.detach().abs()+eps)
+        L_sharpness_loss = L_sharpness_loss/(L_sharpness_loss.abs()+eps)
 
         ## total lossss
         # * adjust(0, 1, epoch, num_epochs) 
-        total_loss =   1e-1*L_sharpness_loss + L_SSIM*10+ L_mutual_info + 10*simsiam_loss_total
-
+        total_loss =   1e-1*L_sharpness_loss + L_SSIM+ L_mutual_info + simsiam_loss_total
+        print(f"e_weight.grad={e_weight.grad},f_weight.grad={f_weight.grad},ef_weight.grad={ef_weight.grad}")
+        print(L_mutual_info.grad)
         # total_loss =   L_sharpness_loss + 100*L_SSIM + L_mutual_info + simsiam_loss_total
 
         

@@ -23,6 +23,7 @@ class ChannelAttentionv2(nn.Module):
                                 nn.ReLU(),
                                 nn.Conv2d(in_planes3 // ratio, 3, 1, bias=False))
         self.sigmoid = nn.Sigmoid()
+        self.relu = nn.ReLU()
 
     def forward(self, x1, x2, y1, y2, z1, z2):
         #(x3, inp, y3, inpf, z3, inpfe)
@@ -40,7 +41,12 @@ class ChannelAttentionv2(nn.Module):
         avg_out = self.fc(self.avg_pool(x))
         max_out = self.fc(self.max_pool(x))
         out = avg_out + max_out
-        return self.sigmoid(out)
+        # temperature = 0.5  # 较小的值增强差异
+        # weight = F.softmax(out / temperature, dim=1)
+        out = self.relu(out)
+        out = torch.clamp(out, min=0, max=1)
+        # return self.sigmoid(out)
+        return out
 
 
 #Generator
@@ -799,22 +805,22 @@ class FusionSwinTransformerBlock(nn.Module):
 
 
 
-## 轻量级siam
+## 轻量级siam  处理 b 32 256 256 特征图
 class LightEncoder(nn.Module):
     def __init__(self, in_channels=30, dim=512):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 32, 3, 2, 1),    # 原尺寸/2
-            nn.BatchNorm2d(32),
+            # nn.BatchNorm2d(32),
             nn.ReLU(inplace=False),
             nn.Conv2d(32, 64, 3, 2, 1),            # 原尺寸/4 
-            nn.BatchNorm2d(64),
+            # nn.BatchNorm2d(64),
             nn.ReLU(inplace=False),
             nn.Conv2d(64, 128, 3, 2, 1),           # 原尺寸/8
-            nn.BatchNorm2d(128),
+            # nn.BatchNorm2d(128),
             nn.ReLU(inplace=False),
             nn.Conv2d(128, 256, 3, 2, 1),          # 原尺寸/16
-            nn.BatchNorm2d(256),
+            # nn.BatchNorm2d(256),
             nn.ReLU(inplace=False),
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
@@ -832,7 +838,7 @@ class SimSiamLight(nn.Module):
         # 预测器
         self.predictor = nn.Sequential(
             nn.Linear(dim, pred_dim, bias=False),
-            nn.BatchNorm1d(pred_dim),
+            # nn.BatchNorm1d(pred_dim),
             nn.ReLU(inplace=False),
             nn.Linear(pred_dim, dim)
         )
@@ -854,17 +860,38 @@ class SimSiamLight_loss(nn.Module):
         self.e_siam = SimSiamLight(dim=dim, pred_dim=pred_dim,input_channels=input_channels)
         self.f_siam = SimSiamLight(dim=dim, pred_dim=pred_dim,input_channels=input_channels)
         self.ef_siam = SimSiamLight(dim=dim, pred_dim=pred_dim,input_channels=input_channels)
+        self.pred_encoder1 =  nn.Sequential(
+            nn.Conv2d(1, 7, 3, 1, 1),    
+            # nn.BatchNorm2d(7),
+            nn.ReLU(inplace=False),
+        )
+        self.pred_encoder2 =  nn.Sequential(
+            nn.Conv2d(8, 23, 5, 1, 2),    
+            # nn.BatchNorm2d(23),
+            nn.ReLU(inplace=False),
+        )
+        self.pred_encoder3 =  nn.Sequential(
+            nn.Conv2d(24, 32, 7, 1, 3),    
+            # nn.BatchNorm2d(32),
+            nn.ReLU(inplace=False),
+        )
   
         
     def forward(self, pre, event, frame, eframe,weight_EF):
+        # now pre is b 1 256 256
+        N,C,H,W = event.shape
+        pred_frame = pre.view(N,1,H,W) 
+        x1 = self.pred_encoder1(pred_frame)
+        x2 = self.pred_encoder2(torch.cat((x1, pred_frame), 1))
+        x3 = self.pred_encoder3(torch.cat((x2, pred_frame), 1))
         # # 计算各对图像之间的 SimSiam 损失 加入权重
-        p1_ep, p2_ep, z1_ep, z2_ep = self.e_siam(x1=pre, x2=event)
+        p1_ep, p2_ep, z1_ep, z2_ep = self.e_siam(x1=x3, x2=event)
         simsiam_loss_ep = -(cos_sim(p1_ep, z2_ep.detach()).mean() + cos_sim(p2_ep, z1_ep.detach()).mean()) * 0.5
 
-        p1_fp, p2_fp, z1_fp, z2_fp = self.f_siam(x1=pre, x2=frame)
+        p1_fp, p2_fp, z1_fp, z2_fp = self.f_siam(x1=x3, x2=frame)
         simsiam_loss_fp = -(cos_sim(p1_fp, z2_fp.detach()).mean() + cos_sim(p2_fp, z1_fp.detach()).mean()) * 0.5
 
-        p1_efp, p2_efp, z1_efp, z2_efp = self.ef_siam(x1=pre, x2=eframe)
+        p1_efp, p2_efp, z1_efp, z2_efp = self.ef_siam(x1=x3, x2=eframe)
         simsiam_loss_efp = -(cos_sim(p1_efp, z2_efp.detach()).mean() + cos_sim(p2_efp, z1_efp.detach()).mean()) * 0.5
         e_weight =  weight_EF[:, 0:1, :, :] 
         f_weight =  weight_EF[:, 1:2, :, :]
@@ -895,18 +922,19 @@ class SimSiam(nn.Module):
         # build a 3-layer projector
         prev_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = nn.Sequential(nn.Linear(prev_dim, prev_dim, bias=False),
-                                        nn.BatchNorm1d(prev_dim),
+                                        # nn.BatchNorm1d(prev_dim),
                                         nn.ReLU(inplace=True), # first layer
                                         nn.Linear(prev_dim, prev_dim, bias=False),
-                                        nn.BatchNorm1d(prev_dim),
+                                        # nn.BatchNorm1d(prev_dim),
                                         nn.ReLU(inplace=True), # second layer
                                         self.encoder.fc,
-                                        nn.BatchNorm1d(dim, affine=False)) # output layer
+                                        # nn.BatchNorm1d(dim, affine=False)
+                                        ) # output layer
         self.encoder.fc[6].bias.requires_grad = False # hack: not use bias as it is followed by BN
 
         # build a 2-layer predictor
         self.predictor = nn.Sequential(nn.Linear(dim, pred_dim, bias=False),
-                                        nn.BatchNorm1d(pred_dim),
+                                        # nn.BatchNorm1d(pred_dim),
                                         nn.ReLU(inplace=True), # hidden layer
                                         nn.Linear(pred_dim, dim)) # output layer
 

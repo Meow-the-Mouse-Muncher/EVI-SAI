@@ -1,0 +1,117 @@
+from __future__ import print_function
+#sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
+import torch
+import os
+import cv2 as cv
+import argparse
+import utils
+import numpy as np
+from torch import Tensor
+from math import log10
+from pytorch_msssim import SSIM
+from torch.utils.data import DataLoader
+# os.environ['CUDA_VISIBLE_DEVICES'] = "1"  # choose GPU
+from code.Networks.EF_SAI_Net import EF_SAI_Net
+from code.EF_Dataset import Dataset_EFNet
+from prefetch_generator import BackgroundGenerator
+def eval_bn(m):
+    if type(m) == torch.nn.BatchNorm2d:
+        m.eval()
+
+class DataLoaderX(DataLoader):
+    def __iter__(self):
+        return BackgroundGenerator(super().__iter__())
+    
+def psnr(img1:Tensor,img2:Tensor):
+    assert img1.shape == img2.shape
+    mse = torch.sum((img1-img2)**2)/img1.numel()
+    psnr = 10*log10(1/mse)
+    return psnr
+##===================================================##
+##********** Configure training settings ************##
+##===================================================##
+if __name__ == '__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--model_path', type=str, default='./Results/exp_EF/model/checkpoint.pth', help='directory used to store trained networks')
+    parser.add_argument('--re_save_path', type=str, default='./Results/')
+    parser.add_argument("--valGT", type=str, default="/home_ssd/sjy/EVI-SAI/EF_Dataset/test/Aps", help="validation aps path")
+    parser.add_argument("--valEvent", type=str, default="/sjy/EVI-SAI/EF_Dataset/test/Event/", help="validation event path")
+    parser.add_argument("--valFrame", type=str, default="/sjy/EVI-SAI/EF_Dataset/test/Frame/",help="validation frame path")
+    parser.add_argument("--valEframe", type=str, default="/sjy/EVI-SAI/EF_Dataset/test/Eframe/",
+                        help="validation frame path")
+    parser.add_argument("--base_path", type=str, default="/home_ssd/sjy/EVI-SAI/EF_Dataset", help="validation aps path")
+    opts=parser.parse_args()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+    ##===================================================##
+    ##*************** Create dataloader *****************##
+    ##===================================================##
+    model_path = opts.model_path
+    re_save_path = opts.re_save_path
+    img_w = 256
+    img_h = 256
+    #valDataset = TrainSet_Hybrid_singleF(opts.valEvent, opts.valAPS, opts.valFrame, opts.valEframe, norm=False, aps_n = 0, if_exposure = False, exposure = 0.04)
+    valDataset = Dataset_EFNet(mode='test',base_path=opts.base_path, norm=False)
+    valLoader = DataLoader(valDataset, batch_size=1, pin_memory=True, num_workers=4, shuffle=False)
+
+    # ##===================================================##
+    # ##****************** Create model *******************##
+    # ##===================================================##
+    net = EF_SAI_Net()
+    net = net.to(device) 
+    net = torch.nn.DataParallel(net)
+    print("Begin testing network ...")
+    checkpoint = torch.load(opts.model_path, map_location=device)
+    # 加载所有模型权重
+    net.module.load_state_dict(checkpoint['net'])
+    print("All keys matched!")
+    net = net.eval()
+    if (True):
+        print("turn BN to eval mode ...")
+        net.apply(eval_bn)
+    if not (os.path.exists(opts.re_save_path)):
+        os.mkdir(opts.re_save_path)
+    if not (os.path.exists(opts.re_save_path + 'Re/')):
+        os.mkdir(opts.re_save_path + 'Re/')
+    if not (os.path.exists(opts.re_save_path + 'Re_unsupervised/')):
+        os.mkdir(opts.re_save_path + 'Re_unsupervised/')
+    if not (os.path.exists(opts.re_save_path + 'Gt/')):
+        os.mkdir(opts.re_save_path + 'Gt/')
+    # ##===================================================##
+    # ##****************** Test model *******************##
+    # ##===================================================##
+
+    psnr_record = dict()
+    psnr_record['val'],psnr_record['fsai'] = 0,0
+    ssim_record = dict()
+    ssim_record['val'],ssim_record['fsai'] = 0,0
+    ssim_module = SSIM(data_range=1.0, channel=1) 
+    with torch.no_grad():
+        for i, (event, frame, eframe, gt) in enumerate(valLoader):
+            print('Processing ' + format(i,'d'))
+            event = event.to(device)
+            gt = gt.to(device)
+            frame = frame.to(device)
+            eframe = eframe.to(device)
+            timeWin = event.shape[1]
+            outputs,_,weight_EF,__ = net(event, frame, eframe, timeWin)
+            frame_refocus=utils.frame_refocus(frame, threshold=1e-5, norm_type='minmax')
+            psnr_record['val'] += psnr(outputs,gt)
+            ssim_record['val'] += ssim_module(outputs,gt).item()
+            psnr_record['fsai'] += psnr(frame_refocus,gt)
+            ssim_record['fsai'] += ssim_module(frame_refocus,gt).item()
+            outputs = outputs.cpu().detach()
+            outputs = np.array(outputs, dtype=np.float64)
+            outputs = np.squeeze(outputs)
+            outputs = outputs * 255
+            cv.imwrite(opts.re_save_path + 'Re_unsupervised/' + format(i, '04d') + '.png', outputs)
+            gt = gt.cpu().detach()
+            gt = np.array(gt, dtype=np.float64)
+            gt = np.squeeze(gt)
+            gt = gt * 255
+            cv.imwrite(opts.re_save_path + 'Gt/' + format(i, '04d') + '.png', gt)
+        print(f" average psnr: {psnr_record['val']/len(valLoader)}.")
+        print(f" average ssim: {ssim_record['val']/len(valLoader)}.")
+        print(f" average psnr: {psnr_record['fsai']/len(valLoader)}.")
+        print(f" average ssim: {ssim_record['fsai']/len(valLoader)}.")
