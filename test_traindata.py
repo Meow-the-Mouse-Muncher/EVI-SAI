@@ -9,9 +9,9 @@ from tqdm import tqdm
 import sys
 import csv
 
-from code.EF_Dataset import Dataset_EFNet
-from code.Networks.EF_SAI_Net import EF_SAI_Net
-from code.Networks.submodules import SimSiamLight
+from codes.EF_Dataset import Dataset_EFNet
+from codes.Networks.EF_SAI_Net import EF_SAI_Net
+from codes.Networks.submodules import SimSiamLight
 import utils
 
 def check_dataset(dataset, num_samples=5):

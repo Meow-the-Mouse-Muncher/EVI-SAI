@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from code.Networks.submodules import define_G,  ChannelAttentionv2, PatchEmbed, PatchUnEmbed, FusionSwinTransformerBlock
+from codes.Networks.submodules import define_G,  ChannelAttentionv2, PatchEmbed, PatchUnEmbed, FusionSwinTransformerBlock
 from timm.models.layers import  trunc_normal_
 # cofiguration for convolutional layers
 ##  改成snn了，没有被使用，哈哈

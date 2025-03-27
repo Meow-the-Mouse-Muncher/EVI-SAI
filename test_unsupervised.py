@@ -11,8 +11,8 @@ from math import log10
 from pytorch_msssim import SSIM
 from torch.utils.data import DataLoader
 # os.environ['CUDA_VISIBLE_DEVICES'] = "1"  # choose GPU
-from code.Networks.EF_SAI_Net import EF_SAI_Net
-from code.EF_Dataset import Dataset_EFNet
+from codes.Networks.EF_SAI_Net import EF_SAI_Net
+from codes.EF_Dataset import Dataset_EFNet
 from prefetch_generator import BackgroundGenerator
 def eval_bn(m):
     if type(m) == torch.nn.BatchNorm2d:

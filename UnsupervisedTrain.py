@@ -14,10 +14,11 @@ from torch import Tensor
 from math import log10
 import torch.distributed as dist
 import sys
-from code.EF_Dataset import Dataset_EFNet
-from code.Networks.EF_SAI_Net import EF_SAI_Net
+sys.path.append('/home_ssd/sjy/EVI-SAI')
+from codes.EF_Dataset import Dataset_EFNet
+from codes.Networks.EF_SAI_Net import EF_SAI_Net
 from UnsupervisedLoss import TotalLoss
-from code.Networks.submodules import SimSiam,SimSiamLight_loss,MutualInformationLoss
+from codes.Networks.submodules import SimSiam,SimSiamLight_loss,MutualInformationLoss
 import torchvision.models as models
 import utils
 from pytorch_msssim import SSIM
@@ -140,7 +141,7 @@ if __name__ == '__main__':
                 gt = gt.to(device)
                 frame = frame.to(device)
                 eframe = eframe.to(device)
-                # optimizer.zero_grad(set_to_none=True)  # 更彻底地清理梯度
+                optimizer.zero_grad(set_to_none=True)  # 更彻底地清理梯度
                 ## 数据集提前归一化好了
                 pred,features,weight_EF,ori_features = net(event, frame, eframe, time_step)
 
